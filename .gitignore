@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables / secrets
+.env
+.env.local
+.env.*.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Project caches (per spec: embeddings + LLM responses)
+cache/
+embeddings/
+llm_cache/
+.cache/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Planning workspace — contains personally-identifying info; sanitise before publishing
+.ido4shape/
+
+# Local Claude Code project instructions — contains personal email; sanitise before publishing
+CLAUDE.md
+
+# Claude Code session state
+.claude/
