@@ -5,7 +5,7 @@ Novara deployer policy, Novara deployer-extras) into typed Document
 records (ING-01); refines those into article/§/section-level Chunks
 with per-chunk sentence breakdown for FLEX-3 aggregation (ING-02);
 embeds chunks with `multi-qa-MiniLM-L6-cos-v1` and caches them on
-disk (ING-03 — to be implemented).
+disk under `embeddings/{model_name}.npz` (ING-03).
 
 Pre-conditions: `corpus/manifest.json` complete, hashes verified
 (`scripts/validate_corpus.py` passes).
@@ -20,6 +20,8 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+import numpy as np
 
 CORPUS_TAGS = ("REG", "OPS", "DEP", "DEP_EXTRAS")
 
@@ -446,3 +448,99 @@ def chunk_corpus(documents: list[Document]) -> list[Chunk]:
                 sentences=_sentences(body),
             ))
     return chunks
+
+
+# ----- ING-03 chunk embedding with on-disk cache --------------------------
+
+
+_ST_MODELS: dict = {}  # model_name -> SentenceTransformer instance
+
+
+def _get_st_model(model_name: str):
+    """Lazy-load + cache SentenceTransformer instances at module level.
+
+    Avoids the slow sentence_transformers import + model load when only
+    ING-01/ING-02 is being exercised. Same singleton pattern as the
+    spaCy sentencizer in ING-02.
+    """
+    if model_name not in _ST_MODELS:
+        from sentence_transformers import SentenceTransformer
+        _ST_MODELS[model_name] = SentenceTransformer(model_name)
+    return _ST_MODELS[model_name]
+
+
+def _cache_path(cache_dir: Path, model_name: str) -> Path:
+    return cache_dir / f"{model_name}.npz"
+
+
+def _load_cache(cache_path: Path) -> tuple[np.ndarray, list[str]] | None:
+    """Return (embeddings, chunk_ids) from a cached .npz, or None on
+    absent / corrupted file. Caller treats None as cache-miss.
+
+    Catching Exception broadly is deliberate — a cache failure should never
+    crash the system; we just re-embed. numpy raises an array of error
+    types depending on what's wrong with the file (UnpicklingError,
+    ValueError, OSError, BadZipFile…) and listing them all is fragile.
+    """
+    if not cache_path.exists():
+        return None
+    try:
+        data = np.load(cache_path, allow_pickle=True)
+        embeddings = data["embeddings"]
+        chunk_ids = list(data["chunk_ids"])
+        return embeddings, chunk_ids
+    except Exception:
+        return None
+
+
+def _save_cache(
+    cache_path: Path, embeddings: np.ndarray, chunk_ids: list[str]
+) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(cache_path, embeddings=embeddings, chunk_ids=np.array(chunk_ids, dtype=object))
+
+
+def _compute_embeddings(chunks: list[Chunk], model_name: str) -> np.ndarray:
+    """Encode each chunk's chunk_text with the given model. Returns a
+    float32 numpy array of shape (N, D). The `multi-qa-MiniLM-L6-cos-v1`
+    model outputs already-L2-normalised vectors (the `-cos-v1` suffix);
+    `normalize_embeddings=False` because re-normalising would be redundant."""
+    if not chunks:
+        return np.empty((0, 0), dtype=np.float32)
+    model = _get_st_model(model_name)
+    texts = [c.chunk_text for c in chunks]
+    return model.encode(
+        texts,
+        batch_size=32,
+        show_progress_bar=False,
+        normalize_embeddings=False,
+        convert_to_numpy=True,
+    ).astype(np.float32)
+
+
+def embed_chunks(
+    chunks: list[Chunk],
+    model_name: str = "multi-qa-MiniLM-L6-cos-v1",
+    cache_dir: Path = Path("embeddings"),
+) -> tuple[np.ndarray, list[str]]:
+    """Embed each chunk's text and persist to an on-disk cache.
+
+    Hits `cache_dir/{model_name}.npz` when the cached chunk_ids exactly
+    match the input chunks (same set, same order). Otherwise computes
+    fresh embeddings and writes the cache. Model identity is encoded
+    in the filename so FLEX-3 swaps (e.g., to `bge-large-en-v1.5`)
+    create a new file alongside without risk of stale-vector reuse.
+
+    Returns (embeddings, chunk_ids) where embeddings is shape (N, D)
+    in float32 and chunk_ids[i] corresponds to row i.
+    """
+    input_ids = [c.chunk_id for c in chunks]
+    cache_path = _cache_path(cache_dir, model_name)
+
+    cached = _load_cache(cache_path)
+    if cached is not None and cached[1] == input_ids:
+        return cached
+
+    embeddings = _compute_embeddings(chunks, model_name)
+    _save_cache(cache_path, embeddings, input_ids)
+    return embeddings, input_ids

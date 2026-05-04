@@ -166,6 +166,27 @@ Decisions made *during* the build go here, newest first. Format:
 **Updates `build-notes.md`?** [yes/no]
 ```
 
+### ING-03 implementation decisions — 2026-05-04
+**Decided (5 sub-decisions, all aligned with the approved plan; one minor refinement during testing):**
+
+1. **Cache layout: `{cache_dir}/{model_name}.npz`** (per plan). Model identity in the filename, not as a field inside the file. FLEX-3 swap to `bge-large-en-v1.5` will create a new sibling file; the original `multi-qa-MiniLM-L6-cos-v1.npz` is untouched. Zero risk of silent stale-vector reuse across model dimensions (384 vs 1024).
+2. **Cache hit predicate is exact-match on chunk_ids list (same set + same order)** (per plan). Partial-update / incremental embedding rejected as over-engineered — the corpus is frozen during the build, so re-runs hit on every call after the first compute. If Daria ever creates a `corpus-vN/` snapshot per `v2_corpus_specification.md` § 7, the new chunk_ids won't match, ING-03 re-embeds, new cache file is written.
+3. **Return tuple `(embeddings, chunk_ids)`, not a dataclass** (per plan). RET-01 needs both — the matrix for `util.dot_score` and the chunk_ids for top-k index → id mapping. Tuple is the minimum-ceremony shape; promotable to a dataclass if RET-01 reveals friction.
+4. **Lazy SentenceTransformer model loading + module-level singleton** (per plan). Same pattern used for the spaCy sentencizer in ING-02. The `from sentence_transformers import SentenceTransformer` line is *inside* `_get_st_model` so that importing `src.ingestion` for ING-01 / ING-02 work doesn't pay the multi-second sentence_transformers import cost. First call to `embed_chunks` pays the cost; subsequent calls hit the singleton.
+5. **`normalize_embeddings=False` on encode** (per plan). `multi-qa-MiniLM-L6-cos-v1` outputs already-L2-normalised vectors (the `-cos-v1` suffix); REPL spot-check confirmed `np.linalg.norm(e[0]) == 1.0000`. RET-01's `util.dot_score(query, chunks)` will return cosine similarity directly because of this property, with no extra work.
+
+**Minor refinement during testing:**
+
+6. **`_load_cache` catches `Exception` broadly, not a curated tuple** *(refinement, caught by `test_load_cache_returns_none_for_corrupted_file`)*. The plan called for `(OSError, ValueError, KeyError)`. Numpy on a corrupted .npz raises `_pickle.UnpicklingError` (when `allow_pickle=True`) and can also raise `BadZipFile` from the underlying zip layer. Listing all of these is fragile across numpy versions. Cache failure should never crash the system — we just re-embed. The cost of the broader catch is negligible; the benefit is robustness against future-numpy error churn.
+
+**Performance numbers from REPL spot-check (2026-05-04, Apple M2 CPU):**
+- Cold cache: 14.93s for 1,140 chunks (well under the spec's 3-minute budget).
+- Warm cache: 0.37s for the same input (cache load only, no re-embed).
+- Cache file size: 1,820,414 bytes (~1.8 MB) for 1,140 × 384 float32.
+- Embeddings L2-normalised: `np.linalg.norm(e[0]) == 1.0000` confirmed.
+
+**Updates `build-notes.md`?** No (build-notes does not specify cache file format details).
+
 ### ING-02 implementation decisions — 2026-05-04
 **Decided (8 sub-decisions; 3 of these are deviations from the approved plan, flagged below):**
 

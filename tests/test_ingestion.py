@@ -9,9 +9,12 @@ from pathlib import Path
 
 import pytest
 
+import numpy as np
+
 from src.ingestion import (
     Chunk,
     Document,
+    _cache_path,
     _chunk_ai_act,
     _chunk_id,
     _chunk_ico_prose,
@@ -22,10 +25,13 @@ from src.ingestion import (
     _derive_document_id,
     _derive_section_reference,
     _estimate_tokens,
+    _load_cache,
+    _save_cache,
     _section_chunk_id,
     _sentences,
     _strip_page_furniture,
     chunk_corpus,
+    embed_chunks,
     load_corpus,
 )
 
@@ -385,3 +391,155 @@ def test_chunk_dataclass_is_frozen() -> None:
     )
     with pytest.raises(FrozenInstanceError):
         chunk.chunk_text = "different"  # type: ignore[misc]
+
+
+# === ING-03 unit tests ====================================================
+
+
+def _make_chunk(chunk_id: str, text: str = "filler text content body") -> Chunk:
+    return Chunk(
+        chunk_id=chunk_id, parent_document_id=chunk_id,
+        corpus_tag="REG", document_id=chunk_id, section_reference=chunk_id,
+        source_url="", chunk_text=text,
+        file_path=f"regulation/{chunk_id}.txt", sha256_short="abc",
+        sentences=(text,),
+    )
+
+
+def test_cache_path_format(tmp_path: Path) -> None:
+    p = _cache_path(tmp_path, "multi-qa-MiniLM-L6-cos-v1")
+    assert p == tmp_path / "multi-qa-MiniLM-L6-cos-v1.npz"
+
+
+def test_save_then_load_cache_roundtrip(tmp_path: Path) -> None:
+    embeddings = np.random.rand(3, 8).astype(np.float32)
+    ids = ["a", "b", "c"]
+    cache_path = tmp_path / "test.npz"
+    _save_cache(cache_path, embeddings, ids)
+    loaded = _load_cache(cache_path)
+    assert loaded is not None
+    np.testing.assert_array_equal(loaded[0], embeddings)
+    assert loaded[1] == ids
+
+
+def test_load_cache_returns_none_for_missing_file(tmp_path: Path) -> None:
+    assert _load_cache(tmp_path / "nope.npz") is None
+
+
+def test_load_cache_returns_none_for_corrupted_file(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.npz"
+    bad.write_bytes(b"this is not a real npz file")
+    assert _load_cache(bad) is None
+
+
+def test_embed_chunks_empty_input(tmp_path: Path) -> None:
+    embeddings, ids = embed_chunks([], cache_dir=tmp_path)
+    assert embeddings.shape == (0, 0)
+    assert ids == []
+
+
+def test_embed_chunks_writes_cache_and_hits_on_re_run(tmp_path: Path,
+                                                     corpus_chunks) -> None:
+    # First call: cache miss + compute. Second call: cache hit.
+    chunks_subset = corpus_chunks[:5]  # small subset to keep test fast
+    cache_path = _cache_path(tmp_path, "multi-qa-MiniLM-L6-cos-v1")
+    assert not cache_path.exists()
+
+    e1, ids1 = embed_chunks(chunks_subset, cache_dir=tmp_path)
+    assert cache_path.exists()
+    assert e1.shape[0] == len(chunks_subset)
+
+    # Second call should return identical arrays from cache.
+    e2, ids2 = embed_chunks(chunks_subset, cache_dir=tmp_path)
+    np.testing.assert_array_equal(e1, e2)
+    assert ids1 == ids2
+
+
+def test_embed_chunks_cache_invalidates_on_chunk_change(tmp_path: Path) -> None:
+    a = [_make_chunk("a", "text one"), _make_chunk("b", "text two")]
+    b = [_make_chunk("a", "text one"), _make_chunk("c", "text three")]  # different ids
+    e_a, ids_a = embed_chunks(a, cache_dir=tmp_path)
+    e_b, ids_b = embed_chunks(b, cache_dir=tmp_path)
+    assert ids_a != ids_b
+    assert e_a.shape[0] == 2 and e_b.shape[0] == 2
+
+
+# === ING-03 integration tests (real corpus, session-scoped fixture) =======
+
+
+def test_corpus_embeddings_shape(corpus_embeddings, corpus_chunks) -> None:
+    embeddings, ids = corpus_embeddings
+    assert embeddings.shape == (len(corpus_chunks), 384)
+
+
+def test_corpus_embeddings_dtype_is_float32(corpus_embeddings) -> None:
+    embeddings, _ids = corpus_embeddings
+    assert embeddings.dtype == np.float32
+
+
+def test_corpus_embeddings_chunk_ids_match_input_order(
+    corpus_embeddings, corpus_chunks
+) -> None:
+    _e, ids = corpus_embeddings
+    assert ids == [c.chunk_id for c in corpus_chunks]
+
+
+def test_corpus_embeddings_are_l2_normalised(corpus_embeddings) -> None:
+    # multi-qa-MiniLM-L6-cos-v1 outputs already-normalised vectors.
+    embeddings, _ids = corpus_embeddings
+    norms = np.linalg.norm(embeddings, axis=1)
+    np.testing.assert_allclose(norms, 1.0, atol=1e-3)
+
+
+def test_corpus_embedding_runs_under_three_minutes(
+    corpus_chunks, tmp_path: Path
+) -> None:
+    import time
+    start = time.perf_counter()
+    embed_chunks(corpus_chunks, cache_dir=tmp_path)
+    assert (time.perf_counter() - start) < 180.0
+
+
+def test_second_corpus_embedding_run_hits_cache(
+    corpus_chunks, tmp_path: Path
+) -> None:
+    import time
+    embed_chunks(corpus_chunks, cache_dir=tmp_path)  # warm-up
+    start = time.perf_counter()
+    embed_chunks(corpus_chunks, cache_dir=tmp_path)
+    assert (time.perf_counter() - start) < 1.5  # cache hit, no re-embed
+
+
+def test_cache_invalidation_with_different_model_name(
+    corpus_chunks, tmp_path: Path, monkeypatch
+) -> None:
+    """Two different model names produce two different cache files."""
+    # Stub _get_st_model to return a fake encoder so we don't download a
+    # second real model. The fake's encode returns deterministic vectors
+    # of dimension 16, distinct from the real 384-dim embeddings.
+    class _FakeModel:
+        def encode(self, texts, **kwargs):
+            return np.array(
+                [[hash((t, i)) % 100 / 100.0 for i in range(16)] for t in texts],
+                dtype=np.float32,
+            )
+
+    real_get = None
+    from src import ingestion
+
+    def fake_get(name: str):
+        if name == "multi-qa-MiniLM-L6-cos-v1":
+            return real_get(name)
+        return _FakeModel()
+
+    real_get = ingestion._get_st_model
+    monkeypatch.setattr(ingestion, "_get_st_model", fake_get)
+
+    e1, _ = embed_chunks(corpus_chunks[:5], cache_dir=tmp_path,
+                          model_name="multi-qa-MiniLM-L6-cos-v1")
+    e2, _ = embed_chunks(corpus_chunks[:5], cache_dir=tmp_path,
+                          model_name="fake-tiny-model")
+
+    assert (tmp_path / "multi-qa-MiniLM-L6-cos-v1.npz").exists()
+    assert (tmp_path / "fake-tiny-model.npz").exists()
+    assert e1.shape != e2.shape  # 384 vs 16 — proves different cache content
