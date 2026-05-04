@@ -166,6 +166,14 @@ Decisions made *during* the build go here, newest first. Format:
 **Updates `build-notes.md`?** [yes/no]
 ```
 
+### Skip AI Act recitals during ING-02 chunking — pre-build review (2026-05-04)
+**Decided:** ING-02 starts chunking the EU AI Act `.txt` from line 3915 (Article 1) onward. Recitals 1–180 (lines ~60–3914) are excluded from the chunked content.
+**Reason:** Recitals are interpretive paragraphs explaining *why* each provision exists; they're not directly enforceable obligations. Including them risks CHN-03 extracting pseudo-obligations from explanatory text and corrupting downstream classification — exactly the high-risk failure mode noted in the spec for CHN-03. The compliance gap analysis system's distinctive claim is that obligations are extracted from operative provisions and matched against deployer policy. Recitals carry no obligations; including them adds noise without clear retrieval benefit. Reasoning recorded in full at `docs/ai-act-extraction-notes.md` § "Recitals — chunk or skip?".
+**Considered:** (a) chunk separately with a `recital_id` metadata flag for use as supporting context; (b) chunk inline with articles, no flag.
+**Why not (a):** adds chunk count and asks the synthesise prompt to handle a new modality (interpretation note vs obligation evidence) without a strong reason it'll improve gap-surfacing quality. **Why not (b):** simplest but most likely to corrupt CHN-03 (extraction prompt sees recital text and may treat it as an obligation).
+**Trigger to revisit:** if retrieval recall on broad / context-heavy queries is poor at the retrieval-config freeze gate, option (a) is the FLEX path — chunk recitals separately with a metadata flag, never feed to CHN-03 extraction, optionally surface in CHN-05 synthesise as interpretive context.
+**Updates `build-notes.md`?** No (build-notes does not specify chunking-level implementation choices).
+
 ### Decision #5 token guard — Llama number revised to placeholder + watch (2026-05-04)
 **Decided:** Keep 15K Llama guard as a placeholder; tune at the retrieval-config freeze gate (end of week 2) using empirical prompt-size logging from the 5 hand-written queries. Gemma 5K stays unchanged.
 **Reason:** Verified Groq's actual free-tier limits (TPM 12K, TPD 100K, RPM 30, RPD 1K, context 128K). Hard-committing the Llama number before observing real prompt sizes is premature; failure is graceful (rate-limit → Gemma fallback via RoutingClient).
