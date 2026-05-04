@@ -1,17 +1,14 @@
 """ING-01, ING-02, ING-03 — corpus ingestion.
 
 Loads the four-bucket corpus (regulation, ICO operational guidance,
-Novara deployer policy, Novara deployer-extras) into typed chunk
-records (ING-01); chunks legal texts at Article/§ boundaries with
-sentence segmentation within larger units (ING-02); embeds chunks
-with `multi-qa-MiniLM-L6-cos-v1` and caches them on disk (ING-03).
+Novara deployer policy, Novara deployer-extras) into typed Document
+records (ING-01); refines those into article/§/section-level Chunks
+with per-chunk sentence breakdown for FLEX-3 aggregation (ING-02);
+embeds chunks with `multi-qa-MiniLM-L6-cos-v1` and caches them on
+disk (ING-03 — to be implemented).
 
 Pre-conditions: `corpus/manifest.json` complete, hashes verified
 (`scripts/validate_corpus.py` passes).
-
-Outputs: typed chunk records carrying corpus_tag, document_id,
-section_reference, source_url, chunk_id, chunk_text, plus an
-on-disk embedding cache under `embeddings/`.
 
 Reference: compliance-gap-analysis-spec.md § Group: Ingestion.
 AI Act extraction observations: docs/ai-act-extraction-notes.md.
@@ -20,6 +17,7 @@ AI Act extraction observations: docs/ai-act-extraction-notes.md.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,9 +40,25 @@ _OPS_SUB_LABELS: dict[str, str] = {
     "ico-audit-framework": "ICO Audit Framework",
 }
 
+# Regexes for ING-02 chunkers
+_AI_ACT_NOISE = (
+    re.compile(r"^.*PE-CONS\s*\d+/\d+.*$"),
+    re.compile(r"^.*\bTREE\.\d+\.[A-Z]\b.*$"),  # matches mid-line too — e.g., "ANNEX I  TREE.2.B  EN" page headers
+    re.compile(r"^\s*[A-Z]{2,4}\s*$"),
+    re.compile(r"^\s*\d+\s*$"),
+)
+_AI_ACT_ARTICLE = re.compile(r"^\s{10,}Article\s+(\d+)\s*$")
+_AI_ACT_ANNEX = re.compile(r"^\s*ANNEX\s+([IVX]+)\b")
+_NUMBERED_PARA = re.compile(r"^\s*(\d+)\.\s+")
+_NOVARA_POLICY_SECTION = re.compile(r"^(\d+(?:\.\d+)?)\s+([A-Z][a-zA-Z]{2,}.{4,})$")
+_MD_HEADING = re.compile(r"^(#{1,3})\s+(.+)$")
+
+
+# ----- ING-01 Document -----------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
-class Chunk:
+class Document:
     chunk_id: str
     corpus_tag: str
     document_id: str
@@ -78,11 +92,9 @@ def _derive_section_reference(file_path: str) -> str:
     parts = Path(file_path).parts
     stem = Path(file_path).stem
 
-    # regulation/uk-gdpr-art-{N}.txt -> "UK GDPR Article {N}"
     if stem.startswith("uk-gdpr-art-"):
         return f"UK GDPR Article {stem.removeprefix('uk-gdpr-art-')}"
 
-    # operational/{sub}/{NN-slug}.txt -> "{Sub label} — {Title}"
     if parts[0] == "operational" and len(parts) == 3:
         sub_label = _OPS_SUB_LABELS.get(parts[1], parts[1])
         head, _, tail = stem.partition("-")
@@ -90,7 +102,6 @@ def _derive_section_reference(file_path: str) -> str:
         title = slug.replace("-", " ").capitalize()
         return f"{sub_label} — {title}"
 
-    # Fallback: stem with hyphens turned to spaces, title-cased.
     return stem.replace("-", " ").title()
 
 
@@ -103,18 +114,18 @@ def _chunk_id(file_path: str) -> str:
     return str(Path(file_path).with_suffix(""))
 
 
-def load_corpus(manifest_path: Path = Path("corpus/manifest.json")) -> list[Chunk]:
-    """Load every text file in the manifest into a Chunk record.
+def load_corpus(manifest_path: Path = Path("corpus/manifest.json")) -> list[Document]:
+    """Load every text file in the manifest into a Document record.
 
     Skips manifest entries with `word_count == 0` (PDFs whose .txt
     siblings are the canonical retrieval source per v2 corpus spec § 2).
-    Returns chunks in manifest order; chunk_ids are stable across re-runs
-    against the same manifest.
+    Returns documents in manifest order; chunk_ids are stable across
+    re-runs against the same manifest.
     """
     corpus_root = manifest_path.parent
     entries = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-    chunks: list[Chunk] = []
+    documents: list[Document] = []
     for entry in entries:
         if entry["word_count"] == 0:
             # PDF entries are present for citation provenance only;
@@ -123,13 +134,10 @@ def load_corpus(manifest_path: Path = Path("corpus/manifest.json")) -> list[Chun
 
         rel_path = entry["path"]
         text = (corpus_root / rel_path).read_text(encoding="utf-8")
-        corpus_tag = _derive_corpus_tag(rel_path)
-        document_id = _derive_document_id(rel_path)
-
-        chunks.append(Chunk(
+        documents.append(Document(
             chunk_id=_chunk_id(rel_path),
-            corpus_tag=corpus_tag,
-            document_id=document_id,
+            corpus_tag=_derive_corpus_tag(rel_path),
+            document_id=_derive_document_id(rel_path),
             section_reference=_derive_section_reference(rel_path),
             source_url=entry["source_url"],
             chunk_text=text,
@@ -137,4 +145,304 @@ def load_corpus(manifest_path: Path = Path("corpus/manifest.json")) -> list[Chun
             sha256_short=entry["sha256_short"],
         ))
 
+    return documents
+
+
+# ----- ING-02 Chunk + per-bucket chunkers ----------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Chunk:
+    chunk_id: str
+    parent_document_id: str
+    corpus_tag: str
+    document_id: str
+    section_reference: str
+    source_url: str
+    chunk_text: str
+    file_path: str
+    sha256_short: str
+    sentences: tuple[str, ...]
+
+
+_NLP = None
+
+
+def _get_sentencizer():
+    """Lazy-init spaCy sentencizer per the week-7 RAG tutorial pattern."""
+    global _NLP
+    if _NLP is None:
+        from spacy.lang.en import English
+        _NLP = English()
+        _NLP.add_pipe("sentencizer")
+    return _NLP
+
+
+def _sentences(text: str) -> tuple[str, ...]:
+    if not text.strip():
+        return ()
+    nlp = _get_sentencizer()
+    return tuple(s.text.strip() for s in nlp(text).sents if s.text.strip())
+
+
+def _estimate_tokens(text: str) -> int:
+    # Per docs/decisions.md §5: len // 3.5 is a reasonable English heuristic.
+    return int(len(text) / 3.5)
+
+
+def _strip_page_furniture(text: str) -> str:
+    keep = []
+    for line in text.splitlines():
+        if any(p.match(line) for p in _AI_ACT_NOISE):
+            continue
+        keep.append(line)
+    return "\n".join(keep)
+
+
+def _section_chunk_id(parent_document_id: str, anchor: str) -> str:
+    return f"{parent_document_id}#{anchor}"
+
+
+def _cluster_sentences(
+    sentences: tuple[str, ...], target_tokens: int = 250
+) -> list[tuple[str, ...]]:
+    """Greedy clustering of sentences into ~target_tokens-sized groups."""
+    clusters: list[tuple[str, ...]] = []
+    current: list[str] = []
+    current_tokens = 0
+    for s in sentences:
+        s_tokens = _estimate_tokens(s)
+        if current and current_tokens + s_tokens > target_tokens:
+            clusters.append(tuple(current))
+            current = [s]
+            current_tokens = s_tokens
+        else:
+            current.append(s)
+            current_tokens += s_tokens
+    if current:
+        clusters.append(tuple(current))
+    return clusters
+
+
+def _split_long_article(body: str, max_tokens: int = 800) -> list[tuple[str, str]]:
+    """Sub-split an over-long article body at numbered-paragraph boundaries.
+
+    Returns [(anchor_suffix, sub_body), ...]. If the body is small enough or
+    has no numbered boundaries, returns [("", body)]. Sub-anchors use
+    sequential indexing ("para-1", "para-2", ...) rather than the matched
+    paragraph number — annexes with Section A/B/C each carry their own
+    "1.", "2." numbering, so the regex-matched number can collide; sequential
+    keeps anchors unique within the parent body.
+    """
+    if _estimate_tokens(body) <= max_tokens:
+        return [("", body)]
+    lines = body.splitlines()
+    paras: list[list[str]] = []
+    current: list[str] = []
+    has_started_paragraphing = False
+    for line in lines:
+        if _NUMBERED_PARA.match(line):
+            if has_started_paragraphing:
+                paras.append(current)
+                current = [line]
+            else:
+                # First numbered paragraph absorbs preceding preamble lines
+                # (article title, "Subject matter" line, etc.) — otherwise
+                # the title becomes a tiny standalone chunk that wins retrieval
+                # on title-keyword queries while carrying no obligation content.
+                current.append(line)
+                has_started_paragraphing = True
+        else:
+            current.append(line)
+    if current:
+        paras.append(current)
+    if len(paras) <= 1:
+        return [("", body)]
+    return [(f"para-{i}", "\n".join(lns).strip())
+            for i, lns in enumerate(paras, 1)
+            if "\n".join(lns).strip()]
+
+
+def _chunk_ai_act(text: str) -> list[tuple[str, str, str]]:
+    """Split the AI Act text into [(anchor, label, body), ...].
+
+    Drops page furniture, skips recitals (everything before Article 1),
+    splits at Article and Annex boundaries, sub-splits over-long articles
+    at numbered-paragraph boundaries.
+    """
+    cleaned = _strip_page_furniture(text)
+    lines = cleaned.splitlines()
+
+    # Find first "Article 1" — skip everything before (recitals + preamble).
+    start = 0
+    for i, line in enumerate(lines):
+        m = _AI_ACT_ARTICLE.match(line)
+        if m and m.group(1) == "1":
+            start = i
+            break
+    else:
+        return []
+
+    # Walk articles and annexes.
+    sections: list[tuple[str, str, list[str]]] = []  # (anchor, label, body lines)
+    current_anchor = "article-1"
+    current_label = "EU AI Act Article 1"
+    current_body: list[str] = []
+    seen_annexes: set[str] = set()
+
+    for line in lines[start + 1:]:
+        m_art = _AI_ACT_ARTICLE.match(line)
+        m_anx = _AI_ACT_ANNEX.match(line)
+        if m_art:
+            sections.append((current_anchor, current_label, current_body))
+            n = m_art.group(1)
+            current_anchor = f"article-{n}"
+            current_label = f"EU AI Act Article {n}"
+            current_body = []
+        elif m_anx and m_anx.group(1) not in seen_annexes:
+            seen_annexes.add(m_anx.group(1))
+            sections.append((current_anchor, current_label, current_body))
+            roman = m_anx.group(1)
+            current_anchor = f"annex-{roman.lower()}"
+            current_label = f"EU AI Act Annex {roman}"
+            current_body = []
+        else:
+            current_body.append(line)
+    sections.append((current_anchor, current_label, current_body))
+
+    # Materialise + sub-split long articles.
+    out: list[tuple[str, str, str]] = []
+    for anchor, label, body_lines in sections:
+        body = "\n".join(body_lines).strip()
+        if not body:
+            continue
+        sub = _split_long_article(body)
+        if len(sub) == 1:
+            out.append((anchor, label, body))
+        else:
+            for sub_anchor, sub_body in sub:
+                out.append((f"{anchor}-{sub_anchor}", f"{label} ({sub_anchor})", sub_body))
+    return out
+
+
+def _chunk_gdpr_article(doc: Document) -> list[tuple[str, str, str]]:
+    """Single chunk per GDPR per-article file. Article 5 is sub-split per
+    principle paragraph if the file's structure supports it."""
+    if doc.document_id == "uk-gdpr-art-5":
+        # Art 5 has multiple principles; emit one chunk per non-empty paragraph.
+        paras = [p.strip() for p in re.split(r"\n\s*\n", doc.chunk_text) if p.strip()]
+        if len(paras) >= 2:
+            return [(f"para-{i}", f"{doc.section_reference}({i})", p)
+                    for i, p in enumerate(paras, 1)]
+    return [("whole", doc.section_reference, doc.chunk_text.strip())]
+
+
+def _chunk_ico_prose(doc: Document) -> list[tuple[str, str, str]]:
+    sents = _sentences(doc.chunk_text)
+    if not sents:
+        return []
+    clusters = _cluster_sentences(sents, target_tokens=250)
+    total = len(clusters)
+    return [(f"cluster-{i}",
+             f"{doc.section_reference} [{i}/{total}]",
+             " ".join(cluster))
+            for i, cluster in enumerate(clusters, 1)]
+
+
+def _chunk_novara_policy(doc: Document) -> list[tuple[str, str, str]]:
+    """Split the Novara policy at numbered section/sub-section headings."""
+    lines = doc.chunk_text.splitlines()
+    sections: list[tuple[str, str, list[str]]] = []
+    current_anchor = "preamble"
+    current_label = f"{doc.section_reference} — Preamble"
+    current: list[str] = []
+    for line in lines:
+        m = _NOVARA_POLICY_SECTION.match(line)
+        if m:
+            if current:
+                sections.append((current_anchor, current_label, current))
+            number, title = m.group(1), m.group(2).strip()
+            current_anchor = f"section-{number.replace('.', '-')}"
+            current_label = f"{doc.section_reference} §{number} {title}"
+            current = []
+        else:
+            current.append(line)
+    if current:
+        sections.append((current_anchor, current_label, current))
+
+    out: list[tuple[str, str, str]] = []
+    for anchor, label, body_lines in sections:
+        body = "\n".join(body_lines).strip()
+        if len(body) >= 20:  # skip near-empty (whitespace-only) sections
+            out.append((anchor, label, body))
+    return out
+
+
+def _chunk_novara_extras(doc: Document) -> list[tuple[str, str, str]]:
+    """Split Novara markdown extras at ## and ### headings."""
+    lines = doc.chunk_text.splitlines()
+    sections: list[tuple[str, str, list[str]]] = []
+    current_anchor = "preamble"
+    current_label = f"{doc.section_reference} — Preamble"
+    current: list[str] = []
+    seen_section = False
+    for line in lines:
+        m = _MD_HEADING.match(line)
+        # Treat ## and ### as section boundaries; skip the leading # title.
+        if m and len(m.group(1)) >= 2:
+            if current and (seen_section or _estimate_tokens("\n".join(current)) >= 50):
+                sections.append((current_anchor, current_label, current))
+            seen_section = True
+            title = m.group(2).strip()
+            anchor = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or f"section-{len(sections) + 1}"
+            current_anchor = anchor
+            current_label = f"{doc.section_reference} — {title}"
+            current = []
+        else:
+            current.append(line)
+    if current and (seen_section or _estimate_tokens("\n".join(current)) >= 50):
+        sections.append((current_anchor, current_label, current))
+
+    out: list[tuple[str, str, str]] = []
+    for anchor, label, body_lines in sections:
+        body = "\n".join(body_lines).strip()
+        if body:
+            out.append((anchor, label, body))
+    return out
+
+
+def _dispatch_chunker(doc: Document) -> list[tuple[str, str, str]]:
+    if doc.file_path == "regulation/eu-ai-act-2024-1689.txt":
+        return _chunk_ai_act(doc.chunk_text)
+    if doc.file_path == "regulation/uk-gdpr-articles-relevant.txt":
+        return []  # duplicates the per-article files; skip
+    if doc.corpus_tag == "REG":
+        return _chunk_gdpr_article(doc)
+    if doc.corpus_tag == "OPS":
+        return _chunk_ico_prose(doc)
+    if doc.corpus_tag == "DEP":
+        return _chunk_novara_policy(doc)
+    if doc.corpus_tag == "DEP_EXTRAS":
+        return _chunk_novara_extras(doc)
+    raise ValueError(f"no chunker for {doc.file_path} (tag {doc.corpus_tag})")
+
+
+def chunk_corpus(documents: list[Document]) -> list[Chunk]:
+    """Refine file-level Documents into article/§/section-level Chunks
+    with per-chunk sentence breakdown for FLEX-3 aggregation."""
+    chunks: list[Chunk] = []
+    for doc in documents:
+        for anchor, label, body in _dispatch_chunker(doc):
+            chunks.append(Chunk(
+                chunk_id=_section_chunk_id(doc.chunk_id, anchor),
+                parent_document_id=doc.chunk_id,
+                corpus_tag=doc.corpus_tag,
+                document_id=doc.document_id,
+                section_reference=label,
+                source_url=doc.source_url,
+                chunk_text=body,
+                file_path=doc.file_path,
+                sha256_short=doc.sha256_short,
+                sentences=_sentences(body),
+            ))
     return chunks

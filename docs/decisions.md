@@ -166,6 +166,28 @@ Decisions made *during* the build go here, newest first. Format:
 **Updates `build-notes.md`?** [yes/no]
 ```
 
+### ING-02 implementation decisions — 2026-05-04
+**Decided (8 sub-decisions; 3 of these are deviations from the approved plan, flagged below):**
+
+1. **`Chunk` → `Document` rename for ING-01 output** (per plan). The retrievable-unit name belongs to ING-02; ING-01's file-level records are now Documents. Mechanical rename across `src/ingestion.py` and `tests/test_ingestion.py`.
+2. **New `Chunk` dataclass for ING-02 output** (per plan): 10 fields — the inherited 8 plus `parent_document_id` (provenance back to ING-01) and `sentences: tuple[str, ...]` (FLEX-3 RET-02 sub-data).
+3. **GDPR consolidated file (`uk-gdpr-articles-relevant.txt`) produces zero chunks** (per plan). The file is loaded by ING-01 for corpus completeness; ING-02's dispatcher returns `[]` because the per-article files cover the same content with finer granularity.
+4. **Section-level retrieval chunks (1140 total) with sentence breakdown stored as metadata** (per plan). Per-bucket distribution: 542 REG / 536 OPS / 15 DEP / 47 DEP_EXTRAS. Below the corpus spec § 4 estimate of 3K–5K because that estimate assumed sentence-level granularity; we instead carry sentence breakdown on each chunk for FLEX-3 aggregation.
+5. **ICO chunker uses sentence-cluster grouping at ~250-token target** (per plan). Section reference: `"{Document section_reference} [N/Total]"`. The H2/H3 inference suggested by corpus spec § 5 doesn't survive the HTML-to-plain-text extraction.
+6. **Novara policy section regex requires `[A-Z][a-zA-Z]{2,}.{4,}` heading body** (per plan). Rejects "30 days" (a §4.4 retention table cell) which a naïve `^(\d+(?:\.\d+)?)\s+(.+)$` would have accepted.
+
+**Deviations from the approved plan:**
+
+7. **AI Act page-furniture TREE regex matches mid-line, not standalone** *(deviation, caught by `test_no_page_furniture_in_chunk_text`)*. The plan inherited the pattern from `docs/ai-act-extraction-notes.md` § "Page furniture" which gave `^\s*TREE\.\d+\.[A-Z]\s*$` (standalone-line). The actual annex page headers combine multiple noise tokens on one line — `ANNEX I    TREE.2.B    EN` — so a standalone-line regex misses them, and `TREE.2.B` leaked into article-1 chunk text. Tightened to `^.*\bTREE\.\d+\.[A-Z]\b.*$` (matches anywhere in the line). The standalone-line annex header (`ANNEX I` alone, line 10450) is the one that gets *picked up* by the annex-boundary detector; the combined page-header repeats are stripped as furniture.
+
+8. **`_split_long_article` uses sequential paragraph indexing, not regex-matched numbers** *(deviation, caught by `test_chunk_ids_are_unique_across_corpus`)*. The plan said sub-anchors look like `para-{N}` from the regex match (`m.group(1)`). This collided in AI Act annexes with multi-section structure — ANNEX VIII has Sections A, B, C, each carrying its own "1.", "2." numbering, and my "first occurrence wins" annex detection groups them all under one parent. Result: 11 colliding chunk_ids on first run. Switched to sequential indexing (`para-1`, `para-2`, ... in document order) inside the parent's body; collisions resolved.
+
+9. **Pre-numbered preamble merges with the first numbered paragraph** *(deviation, caught by spot-check rather than tests)*. With the original sub-split logic, an article like Article 27 produced a tiny standalone chunk containing only the article title (`"Fundamental rights impact assessment for high-risk AI systems"`, 8 words). On a retrieval query like `"FRIA Article 27"`, the title-only chunk would win on cosine similarity but carry no obligation content — exactly the wrong chunk to surface. Fixed by tracking a `has_started_paragraphing` flag: the first numbered paragraph absorbs all preceding preamble lines (article title, subject-matter line) instead of closing them into their own pseudo-paragraph. Article 27's first sub-chunk now contains title + substantive paragraph 1.
+
+**Test signal:** the build-time test set caught two of the three deviations directly (TREE regex via `test_no_page_furniture_in_chunk_text`; sequential indexing via `test_chunk_ids_are_unique_across_corpus`). The third (title-merge) was caught by REPL spot-check during the verification step — a reminder that automated tests cover structural invariants but retrieval-quality concerns need human-in-the-loop verification, exactly as the spec § ING-02 success conditions anticipate ("freeze gate, 5–10 manually reviewed chunks").
+
+**Updates `build-notes.md`?** No (build-notes does not specify implementation-level chunking heuristics; the FLEX-3 paths it documents remain accurate as fallback options).
+
 ### ING-01 implementation decisions — 2026-05-04
 **Decided (4 sub-decisions, all on the same implementation):**
 

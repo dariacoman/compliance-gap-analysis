@@ -1,7 +1,8 @@
-"""ING-01 unit + integration tests."""
+"""ING-01 + ING-02 unit + integration tests."""
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -10,15 +11,26 @@ import pytest
 
 from src.ingestion import (
     Chunk,
+    Document,
+    _chunk_ai_act,
     _chunk_id,
+    _chunk_ico_prose,
+    _chunk_novara_extras,
+    _chunk_novara_policy,
+    _cluster_sentences,
     _derive_corpus_tag,
     _derive_document_id,
     _derive_section_reference,
+    _estimate_tokens,
+    _section_chunk_id,
+    _sentences,
+    _strip_page_furniture,
+    chunk_corpus,
     load_corpus,
 )
 
 
-# --- Unit tests (no I/O) -------------------------------------------------
+# === ING-01 unit tests ====================================================
 
 
 @pytest.mark.parametrize("path,expected", [
@@ -41,7 +53,6 @@ def test_derive_corpus_tag_rejects_unknown_bucket() -> None:
 def test_derive_document_id_strips_extension() -> None:
     assert _derive_document_id("regulation/uk-gdpr-art-22.txt") == "uk-gdpr-art-22"
     assert _derive_document_id("deployer-extras/novara-talentlens-dpia.md") == "novara-talentlens-dpia"
-    # Multi-dot filename: Path.stem returns text before the LAST dot.
     assert _derive_document_id("deployer/novara-ai-policy-v3.1.txt") == "novara-ai-policy-v3.1"
 
 
@@ -71,98 +82,306 @@ def test_chunk_id_strips_extension() -> None:
 
 
 def test_chunk_id_distinguishes_same_stem_in_different_subfolders() -> None:
-    # Real corpus collision: ico-main-guidance/03-transparency.txt and
-    # ico-audit-framework/03-transparency.txt — same stem, same OPS tag.
     a = _chunk_id("operational/ico-main-guidance/03-transparency.txt")
     b = _chunk_id("operational/ico-audit-framework/03-transparency.txt")
     assert a != b
 
 
-def test_chunk_dataclass_is_frozen() -> None:
-    chunk = Chunk(
-        chunk_id="REG:x",
-        corpus_tag="REG",
-        document_id="x",
-        section_reference="X",
-        source_url="",
-        chunk_text="content",
-        file_path="regulation/x.txt",
-        sha256_short="abc",
+def test_document_dataclass_is_frozen() -> None:
+    doc = Document(
+        chunk_id="REG:x", corpus_tag="REG", document_id="x",
+        section_reference="X", source_url="", chunk_text="content",
+        file_path="regulation/x.txt", sha256_short="abc",
     )
     with pytest.raises(FrozenInstanceError):
-        chunk.chunk_text = "different"  # type: ignore[misc]
+        doc.chunk_text = "different"  # type: ignore[misc]
 
 
-# --- Integration tests (against the real frozen corpus) -----------------
+# === ING-01 integration tests ============================================
 
 
-def test_load_corpus_returns_42_chunks(corpus_manifest_path: Path) -> None:
-    # 44 manifest entries minus 2 PDFs (word_count == 0).
-    chunks = load_corpus(corpus_manifest_path)
-    assert len(chunks) == 42
+def test_load_corpus_returns_42_documents(corpus_documents) -> None:
+    assert len(corpus_documents) == 42
 
 
-def test_every_chunk_has_required_fields_populated(corpus_manifest_path: Path) -> None:
-    chunks = load_corpus(corpus_manifest_path)
-    for c in chunks:
-        assert c.chunk_id, f"empty chunk_id: {c.file_path}"
-        assert c.corpus_tag, f"empty corpus_tag: {c.file_path}"
-        assert c.document_id, f"empty document_id: {c.file_path}"
-        assert c.section_reference, f"empty section_reference: {c.file_path}"
-        # source_url may be a non-URL string for fictive Novara files
-        # (manifest records "— Fictive (Novara fabricated for project) —"),
-        # so assert presence-of-string, not URL shape.
-        assert isinstance(c.source_url, str) and c.source_url, f"empty source_url: {c.file_path}"
-        assert c.chunk_text, f"empty chunk_text: {c.file_path}"
-        assert c.file_path, "empty file_path"
-        assert c.sha256_short, f"empty sha256_short: {c.file_path}"
+def test_every_document_has_required_fields_populated(corpus_documents) -> None:
+    for d in corpus_documents:
+        assert d.chunk_id and d.corpus_tag and d.document_id
+        assert d.section_reference and d.source_url and d.chunk_text
+        assert d.file_path and d.sha256_short
 
 
-def test_every_chunk_has_one_of_four_corpus_tags(corpus_manifest_path: Path) -> None:
-    chunks = load_corpus(corpus_manifest_path)
+def test_every_document_has_one_of_four_corpus_tags(corpus_documents) -> None:
     valid = {"REG", "OPS", "DEP", "DEP_EXTRAS"}
-    for c in chunks:
-        assert c.corpus_tag in valid, f"unexpected tag {c.corpus_tag} on {c.file_path}"
+    for d in corpus_documents:
+        assert d.corpus_tag in valid
 
 
-def test_corpus_tag_distribution(corpus_manifest_path: Path) -> None:
-    chunks = load_corpus(corpus_manifest_path)
+def test_corpus_tag_distribution(corpus_documents) -> None:
     counts: dict[str, int] = {}
-    for c in chunks:
-        counts[c.corpus_tag] = counts.get(c.corpus_tag, 0) + 1
-    # Post-PR2 corpus, PDFs excluded:
-    #   regulation: 1 ai-act .txt + 8 GDPR articles + 1 consolidated = 10
-    #   operational: 10 main + 6 genai + 10 audit = 26
-    #   deployer: 1 (PDF excluded)
-    #   deployer-extras: 5
+    for d in corpus_documents:
+        counts[d.corpus_tag] = counts.get(d.corpus_tag, 0) + 1
     assert counts == {"REG": 10, "OPS": 26, "DEP": 1, "DEP_EXTRAS": 5}
 
 
-def test_chunk_ids_are_unique_across_corpus(corpus_manifest_path: Path) -> None:
-    chunks = load_corpus(corpus_manifest_path)
-    ids = [c.chunk_id for c in chunks]
+def test_document_ids_are_unique_across_corpus(corpus_documents) -> None:
+    ids = [d.chunk_id for d in corpus_documents]
     assert len(ids) == len(set(ids))
 
 
-def test_load_corpus_is_idempotent(corpus_manifest_path: Path) -> None:
+def test_load_corpus_is_idempotent(corpus_manifest_path) -> None:
     a = load_corpus(corpus_manifest_path)
     b = load_corpus(corpus_manifest_path)
+    assert [d.chunk_id for d in a] == [d.chunk_id for d in b]
+
+
+def test_document_text_meets_minimum_word_floor(corpus_documents) -> None:
+    for d in corpus_documents:
+        assert len(d.chunk_text.split()) >= 50
+
+
+def test_load_corpus_completes_in_under_60s(corpus_manifest_path) -> None:
+    start = time.perf_counter()
+    docs = load_corpus(corpus_manifest_path)
+    assert (time.perf_counter() - start) < 60.0
+    assert docs
+
+
+# === ING-02 unit tests ====================================================
+
+
+def test_estimate_tokens_returns_int() -> None:
+    assert _estimate_tokens("") == 0
+    assert _estimate_tokens("a" * 35) == 10  # 35 / 3.5 = 10
+    assert isinstance(_estimate_tokens("hello world"), int)
+
+
+def test_strip_page_furniture_removes_known_noise() -> None:
+    raw = (
+        "PE-CONS 24/24    AD/DOS    TREE.2.B    EN\n"
+        "actual body line\n"
+        "TREE.2.B\n"
+        "another body line\n"
+        "EN\n"
+        "42\n"
+        "    Article 1\n"
+    )
+    cleaned = _strip_page_furniture(raw)
+    assert "PE-CONS" not in cleaned
+    assert "TREE.2.B" not in cleaned
+    assert "actual body line" in cleaned
+    assert "another body line" in cleaned
+    assert "Article 1" in cleaned
+
+
+def test_section_chunk_id_concatenates_path_and_anchor() -> None:
+    assert _section_chunk_id("regulation/uk-gdpr-art-22", "para-3") == "regulation/uk-gdpr-art-22#para-3"
+
+
+def test_cluster_sentences_respects_target_size() -> None:
+    sents = tuple(["This sentence has roughly thirty characters." for _ in range(20)])
+    clusters = _cluster_sentences(sents, target_tokens=50)
+    assert all(len(c) >= 1 for c in clusters)
+    # Each cluster's total token estimate is bounded; allow 1.5x slack for greedy.
+    for cluster in clusters:
+        joined = " ".join(cluster)
+        assert _estimate_tokens(joined) <= 50 * 2  # generous upper bound
+
+
+def test_sentences_returns_tuple() -> None:
+    out = _sentences("First sentence. Second sentence. Third one.")
+    assert isinstance(out, tuple)
+    assert len(out) == 3
+
+
+def test_chunk_ai_act_synthetic() -> None:
+    raw = (
+        "Whereas (1) recital text\n"
+        "PE-CONS 24/24    EN\n"
+        "                                          Article 1\n"
+        "Subject matter\n"
+        "1. This Regulation lays down rules.\n"
+        "PE-CONS 24/24    EN\n"
+        "                                          Article 2\n"
+        "Scope\n"
+        "1. This Regulation applies to providers.\n"
+    )
+    out = _chunk_ai_act(raw)
+    labels = [label for _anchor, label, _body in out]
+    assert "EU AI Act Article 1" in labels
+    assert "EU AI Act Article 2" in labels
+    # Recital is skipped (everything before the first "Article 1" line).
+    bodies = " ".join(b for _a, _l, b in out)
+    assert "recital text" not in bodies
+    assert "PE-CONS" not in bodies
+
+
+def test_novara_policy_section_regex_rejects_table_cells() -> None:
+    # The naïve `^(\d+(?:\.\d+)?)\s+(.+)$` would match "30 days" (a table
+    # cell in §4.4 retention table). The tightened regex requires a
+    # capital-letter-led title with minimum length.
+    text = "3.1 Model Selection and Procurement\nbody body body\n30 days\nmore body\n"
+    fake_doc = Document(
+        chunk_id="deployer/novara-ai-policy-v3.1",
+        corpus_tag="DEP",
+        document_id="novara-ai-policy-v3.1",
+        section_reference="Novara AI Policy v3.1",
+        source_url="",
+        chunk_text=text,
+        file_path="deployer/novara-ai-policy-v3.1.txt",
+        sha256_short="abc",
+    )
+    out = _chunk_novara_policy(fake_doc)
+    labels = [label for _a, label, _b in out]
+    assert any("§3.1 Model Selection and Procurement" in label for label in labels)
+    assert not any("30 days" in label for label in labels)
+
+
+def test_novara_extras_emits_section_chunks() -> None:
+    text = (
+        "# Document Title\n\n"
+        "leading preamble enough to count as content with at least fifty words "
+        "yes lots of words here filler filler filler filler filler filler filler "
+        "filler filler filler filler filler filler filler filler filler filler\n\n"
+        "## 1. First Section\n\n"
+        "first section body\n\n"
+        "## 2. Second Section\n\n"
+        "second section body\n"
+    )
+    fake_doc = Document(
+        chunk_id="deployer-extras/novara-talentlens-dpia",
+        corpus_tag="DEP_EXTRAS",
+        document_id="novara-talentlens-dpia",
+        section_reference="Novara TalentLens DPIA",
+        source_url="",
+        chunk_text=text,
+        file_path="deployer-extras/novara-talentlens-dpia.md",
+        sha256_short="abc",
+    )
+    out = _chunk_novara_extras(fake_doc)
+    labels = [label for _a, label, _b in out]
+    assert any("First Section" in label for label in labels)
+    assert any("Second Section" in label for label in labels)
+
+
+# === ING-02 integration tests ============================================
+
+
+def test_chunk_corpus_total_count_in_estimated_range(corpus_chunks) -> None:
+    assert 300 <= len(corpus_chunks) <= 1500
+
+
+def test_chunk_corpus_per_bucket_distribution_sensible(corpus_chunks) -> None:
+    counts: dict[str, int] = {}
+    for c in corpus_chunks:
+        counts[c.corpus_tag] = counts.get(c.corpus_tag, 0) + 1
+    # Every bucket must produce at least some chunks.
+    assert counts.get("REG", 0) >= 10
+    assert counts.get("OPS", 0) >= 50
+    assert counts.get("DEP", 0) >= 5
+    assert counts.get("DEP_EXTRAS", 0) >= 10
+
+
+def test_no_chunk_straddles_two_articles(corpus_chunks) -> None:
+    # AI Act chunks should not contain a second "Article N" boundary inside
+    # their body. (Minor occurrences of 'Article 22' as inline references
+    # are fine — what's forbidden is a *boundary line*: 10+ leading spaces
+    # then "Article N".)
+    boundary = re.compile(r"\n\s{10,}Article\s+\d+\s*$", re.MULTILINE)
+    for c in corpus_chunks:
+        if c.document_id == "eu-ai-act-2024-1689":
+            assert not boundary.search(c.chunk_text), f"boundary inside {c.chunk_id}"
+
+
+def test_no_page_furniture_in_chunk_text(corpus_chunks) -> None:
+    for c in corpus_chunks:
+        if c.document_id == "eu-ai-act-2024-1689":
+            assert "PE-CONS" not in c.chunk_text, f"page furniture in {c.chunk_id}"
+            assert "TREE.2.B" not in c.chunk_text, f"page furniture in {c.chunk_id}"
+
+
+def test_recitals_are_skipped(corpus_chunks) -> None:
+    # Recitals are the "Whereas (1) ..." paragraphs preceding Article 1.
+    # No AI Act chunk should contain "Whereas:" header. (Substring 'Whereas'
+    # could legitimately appear in operative text; we test the recital
+    # header form specifically.)
+    for c in corpus_chunks:
+        if c.document_id == "eu-ai-act-2024-1689":
+            assert "Whereas:" not in c.chunk_text, f"recital header in {c.chunk_id}"
+
+
+def test_consolidated_gdpr_file_produces_zero_chunks(corpus_chunks) -> None:
+    doc_chunks = [c for c in corpus_chunks if c.document_id == "uk-gdpr-articles-relevant"]
+    assert doc_chunks == []
+
+
+def test_ai_act_article_27_is_a_distinct_chunk(corpus_chunks) -> None:
+    # Q5 demo target — must be retrievable as its own chunk.
+    matches = [c for c in corpus_chunks if c.section_reference.startswith("EU AI Act Article 27")]
+    assert len(matches) >= 1
+
+
+def test_gdpr_article_22_is_a_distinct_chunk(corpus_chunks) -> None:
+    matches = [c for c in corpus_chunks if c.document_id == "uk-gdpr-art-22"]
+    assert len(matches) >= 1
+
+
+def test_novara_policy_section_3_4_is_a_distinct_chunk(corpus_chunks) -> None:
+    # Q2 demo target — red-teaming.
+    matches = [c for c in corpus_chunks
+               if c.document_id == "novara-ai-policy-v3.1"
+               and "§3.4" in c.section_reference]
+    assert len(matches) == 1, f"expected 1 chunk, got {len(matches)}: {[m.section_reference for m in matches]}"
+
+
+def test_every_chunk_has_required_fields_populated(corpus_chunks) -> None:
+    for c in corpus_chunks:
+        assert c.chunk_id and c.parent_document_id and c.corpus_tag
+        assert c.document_id and c.section_reference
+        assert c.chunk_text and c.file_path and c.sha256_short
+        assert isinstance(c.sentences, tuple)
+        assert len(c.sentences) >= 1
+
+
+def test_parent_document_id_links_to_real_document(corpus_documents, corpus_chunks) -> None:
+    doc_ids = {d.chunk_id for d in corpus_documents}
+    for c in corpus_chunks:
+        assert c.parent_document_id in doc_ids, f"orphan chunk {c.chunk_id}"
+
+
+def test_chunk_ids_are_unique_across_corpus(corpus_chunks) -> None:
+    ids = [c.chunk_id for c in corpus_chunks]
+    assert len(ids) == len(set(ids))
+
+
+def test_chunk_corpus_is_idempotent(corpus_documents) -> None:
+    a = chunk_corpus(corpus_documents)
+    b = chunk_corpus(corpus_documents)
     assert [c.chunk_id for c in a] == [c.chunk_id for c in b]
     assert [c.chunk_text for c in a] == [c.chunk_text for c in b]
 
 
-def test_chunk_text_meets_minimum_word_floor(corpus_manifest_path: Path) -> None:
-    # Lower bound chosen below the smallest real file (audit-framework
-    # overview at 96 words). Guards against accidental loading of empty
-    # or truncated content.
-    chunks = load_corpus(corpus_manifest_path)
-    for c in chunks:
-        assert len(c.chunk_text.split()) >= 50, f"too few words: {c.file_path}"
+def test_chunk_size_distribution_sane(corpus_chunks) -> None:
+    sizes = [_estimate_tokens(c.chunk_text) for c in corpus_chunks]
+    # Sanity floor on outliers — most chunks should sit in [50, 1500].
+    inside = sum(1 for s in sizes if 50 <= s <= 1500)
+    fraction = inside / len(sizes)
+    assert fraction >= 0.85, f"only {fraction:.2%} of chunks within [50, 1500] tokens"
 
 
-def test_load_corpus_completes_in_under_60s(corpus_manifest_path: Path) -> None:
+def test_chunk_corpus_completes_in_under_30s(corpus_documents) -> None:
     start = time.perf_counter()
-    chunks = load_corpus(corpus_manifest_path)
-    elapsed = time.perf_counter() - start
-    assert elapsed < 60.0, f"took {elapsed:.2f}s"
-    assert len(chunks) > 0
+    chunk_corpus(corpus_documents)
+    assert (time.perf_counter() - start) < 30.0
+
+
+def test_chunk_dataclass_is_frozen() -> None:
+    chunk = Chunk(
+        chunk_id="x", parent_document_id="x-parent",
+        corpus_tag="REG", document_id="x", section_reference="X",
+        source_url="", chunk_text="content",
+        file_path="regulation/x.txt", sha256_short="abc",
+        sentences=("only one.",),
+    )
+    with pytest.raises(FrozenInstanceError):
+        chunk.chunk_text = "different"  # type: ignore[misc]
