@@ -5,6 +5,28 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line(
+        "markers",
+        "live_api: tests that hit a real external API. Skipped by default; "
+        "run with `pytest -m live_api` to opt in.",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Auto-skip `live_api` tests unless explicitly opted in via -m live_api."""
+    selected = config.getoption("-m") or ""
+    if "live_api" in selected:
+        return
+    skip_marker = pytest.mark.skip(
+        reason="live API test (use `pytest -m live_api` to enable)"
+    )
+    for item in items:
+        if "live_api" in item.keywords:
+            item.add_marker(skip_marker)
+
+
 @pytest.fixture(scope="session")
 def corpus_manifest_path() -> Path:
     return PROJECT_ROOT / "corpus" / "manifest.json"

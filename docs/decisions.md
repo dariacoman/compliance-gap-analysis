@@ -166,6 +166,37 @@ Decisions made *during* the build go here, newest first. Format:
 **Updates `build-notes.md`?** [yes/no]
 ```
 
+### LLM cluster (LLM-01..06) implementation decisions — 2026-05-04
+**Decided (8 sub-decisions; 6 plan-aligned + 2 deviations + 1 minor refinement caught by test/REPL feedback):**
+
+1. **Task methods declared abstract on `LLMClient` (LLM-01) and concrete on `BaseLLMClient` (LLM-02)** (per plan). Chain code calling `client.decompose_query(...)` gets static-analysis comfort because the method *is* declared on the type. Concrete bodies live exactly once, on the base class. Adapters subclass `BaseLLMClient` and inherit task methods for free — per-adapter footprint stays at the spec's ~50–60-line target.
+2. **Cache wraps `_complete()` at the BaseLLMClient layer via `_complete_cached()`** (per plan). Adapters stay focused on their single job (call the model and return a string). The cache key includes `model_id` per spec § Reproducibility, so swapping models invalidates the cache for that prompt without serving stale outputs from another model.
+3. **`temperature=0.0` on the Groq Llama adapter** (per plan). Deterministic responses are essential for cache-key→response idempotence and eval-phase replay reproducibility.
+4. **`LocalGemma2B` lazy-loads the model on first `_complete()`** (per plan). Instantiation is cheap; the ~5 GB Gemma 2-2B-it weight load only happens when actually called. Routing tests can construct the adapter without paying the cost. Targeted at Colab GPU; CPU-only fallback works but is slow.
+5. **JSON parsing is best-effort via `_parse_json_list`** (per plan). Locates the first `[` and last `]`, parses that span. Tolerant to leading prose ("Sure, here's the JSON: …"), trailing commentary, and markdown code fences (```json … ```). Raises `SchemaParseError` only when no recoverable list bracket pair exists. Concrete tolerance for Llama and Gemma's quirks lives in this single shared parser at the base-class layer rather than per-adapter — simpler than the plan's hint of per-adapter parsing tolerance, and the actual model output we've seen makes a unified parser sufficient.
+6. **Single live API test marked `@pytest.mark.live_api` + auto-skip-by-default in conftest** (per plan). Default `pytest tests/` does not call Groq (132 passed, 1 skipped). Live test is opt-in via `pytest -m live_api` (verified passing today). Avoids burning free-tier quota on routine CI.
+
+**Deviations from the approved plan:**
+
+7. **Schema-parse retry is not "1 retry-with-feedback then fallback" — it is "fallback immediately"** *(deviation, deliberate)*. The spec's ideal is "retry primary with a feedback hint then fallback." With `temperature=0` plus the `_complete_cached` layer, retrying the same prompt on the same model produces the same response (cache hit OR deterministic output) — the retry would be a no-op. Real retry-with-feedback would require modifying the prompt mid-task-method (a "your previous JSON was malformed; try again" hint), which is invasive at the task-method-signature level for diminishing return. Falling back immediately to Gemma is predictable, deterministic, and avoids any retry loop. The fallback's response gets cached under its own model_id, so eval-phase replay still hits cache cleanly. Documented inline in `src/llm/routing.py`.
+8. **Groq exception types caught by isinstance helper functions, not by direct `except groq.RateLimitError`** *(deviation, defensive)*. The routing module imports `groq` lazily inside `_is_rate_limit` / `_is_network` helpers so unit tests can exercise routing without the `groq` package resolving correctly in every environment. Pragmatic; keeps the routing layer testable with stub adapters that don't import groq at all.
+
+**Minor refinement during integration:**
+
+9. **`DiskCache(cache_dir=...)` accepts both `Path` and `str`** *(refinement, caught by REPL wiring check)*. The plan typed `cache_dir: Path`. Realistic call sites pass strings (`DiskCache(cache_dir="llm_cache")`); the REPL wiring check failed with `'str' object has no attribute 'mkdir'`. Tightened to `Path | str` and coerce on entry. Test added: `test_diskcache_accepts_string_cache_dir`.
+
+**Performance + verification (2026-05-04):**
+- Full test suite: **133 passed**, 1 skipped (live API), runtime 218s (the 167s integration-test floor from ingestion + ~50s from new LLM tests dominated by spaCy init + corpus runs already present).
+- Live API test: `pytest -m live_api` runs the real Groq call against `llama-3.3-70b-versatile`, returns "pong" content; ~0.5s round-trip.
+- REPL wiring check: `RoutingClient(GroqLlama70B(cache=DiskCache(...)), LocalGemma2B(cache=DiskCache(...)))` instantiates cleanly; `isinstance(r, LLMClient)` is True; properties proxy from primary.
+
+**Deferred to post-CHN-05:**
+- LLM-07 full smoke test (5 fixed queries through the full chain on each adapter): can't run until the chain exists.
+- LLM-08 typing-discipline mock test: depends on a chain that consumes an `LLMClient` argument.
+Both stub files (`tests/test_smoke.py`, `tests/test_typing.py`) exist from PR #3 with docstring-only bodies; bodies fill in when CHN lands.
+
+**Updates `build-notes.md`?** No (cluster-internal implementation detail; all architectural commitments already documented there).
+
 ### RET-01 implementation decisions — 2026-05-04
 **Decided (5 sub-decisions, all aligned with the approved plan; one Apple-Silicon-specific fix during testing):**
 
