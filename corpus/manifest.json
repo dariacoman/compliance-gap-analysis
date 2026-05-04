@@ -250,6 +250,86 @@
     "fetch_date": "2026-05-02"
   },
   {
+    "path": "operational/ico-audit-framework/03-transparency.txt",
+    "corpus_tag": "OPS",
+    "size_bytes": 5906,
+    "sha256_short": "86ff97de5fda2b59",
+    "word_count": 907,
+    "source_url": "https://ico.org.uk/for-organisations/advice-and-services/audits/data-protection-audit-framework/toolkits/artificial-intelligence/transparency/",
+    "doc_pub_date": "\u2014",
+    "fetch_date": "2026-05-04"
+  },
+  {
+    "path": "operational/ico-audit-framework/04-contracts-and-third-parties.txt",
+    "corpus_tag": "OPS",
+    "size_bytes": 9870,
+    "sha256_short": "d9d3be411940ff77",
+    "word_count": 1479,
+    "source_url": "https://ico.org.uk/for-organisations/advice-and-services/audits/data-protection-audit-framework/toolkits/artificial-intelligence/contracts-and-third-parties/",
+    "doc_pub_date": "\u2014",
+    "fetch_date": "2026-05-04"
+  },
+  {
+    "path": "operational/ico-audit-framework/05-data-minimisation.txt",
+    "corpus_tag": "OPS",
+    "size_bytes": 7207,
+    "sha256_short": "695b5356a556951c",
+    "word_count": 1084,
+    "source_url": "https://ico.org.uk/for-organisations/advice-and-services/audits/data-protection-audit-framework/toolkits/artificial-intelligence/data-minimisation/",
+    "doc_pub_date": "\u2014",
+    "fetch_date": "2026-05-04"
+  },
+  {
+    "path": "operational/ico-audit-framework/06-information-security-and-integrity.txt",
+    "corpus_tag": "OPS",
+    "size_bytes": 15631,
+    "sha256_short": "0b13fc54ed4eb8f0",
+    "word_count": 2315,
+    "source_url": "https://ico.org.uk/for-organisations/advice-and-services/audits/data-protection-audit-framework/toolkits/artificial-intelligence/information-security-and-integrity/",
+    "doc_pub_date": "\u2014",
+    "fetch_date": "2026-05-04"
+  },
+  {
+    "path": "operational/ico-audit-framework/07-data-protection-by-design.txt",
+    "corpus_tag": "OPS",
+    "size_bytes": 4570,
+    "sha256_short": "2dcc5c89f28b7c9f",
+    "word_count": 682,
+    "source_url": "https://ico.org.uk/for-organisations/advice-and-services/audits/data-protection-audit-framework/toolkits/artificial-intelligence/data-protection-by-design/",
+    "doc_pub_date": "\u2014",
+    "fetch_date": "2026-05-04"
+  },
+  {
+    "path": "operational/ico-audit-framework/08-statistical-accuracy.txt",
+    "corpus_tag": "OPS",
+    "size_bytes": 11100,
+    "sha256_short": "52b9f8440be74c3e",
+    "word_count": 1646,
+    "source_url": "https://ico.org.uk/for-organisations/advice-and-services/audits/data-protection-audit-framework/toolkits/artificial-intelligence/statistical-accuracy/",
+    "doc_pub_date": "\u2014",
+    "fetch_date": "2026-05-04"
+  },
+  {
+    "path": "operational/ico-audit-framework/09-discrimination-and-bias.txt",
+    "corpus_tag": "OPS",
+    "size_bytes": 7817,
+    "sha256_short": "95e40c9572dd61c7",
+    "word_count": 1115,
+    "source_url": "https://ico.org.uk/for-organisations/advice-and-services/audits/data-protection-audit-framework/toolkits/artificial-intelligence/discrimination-and-bias/",
+    "doc_pub_date": "\u2014",
+    "fetch_date": "2026-05-04"
+  },
+  {
+    "path": "operational/ico-audit-framework/10-human-review.txt",
+    "corpus_tag": "OPS",
+    "size_bytes": 4629,
+    "sha256_short": "c3598bba41573873",
+    "word_count": 711,
+    "source_url": "https://ico.org.uk/for-organisations/advice-and-services/audits/data-protection-audit-framework/toolkits/artificial-intelligence/human-review/",
+    "doc_pub_date": "\u2014",
+    "fetch_date": "2026-05-04"
+  },
+  {
     "path": "regulation/eu-ai-act-2024-1689.pdf",
     "corpus_tag": "REG",
     "size_bytes": 1606488,

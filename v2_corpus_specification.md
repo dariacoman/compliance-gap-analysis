@@ -51,7 +51,15 @@ corpus/
 │   │   └── 06-controllership-supply-chain.txt
 │   └── ico-audit-framework/                             (additional extension — included)
 │       ├── 01-overview.txt
-│       └── 02-governance-accountability.txt
+│       ├── 02-governance-accountability.txt
+│       ├── 03-transparency.txt
+│       ├── 04-contracts-and-third-parties.txt
+│       ├── 05-data-minimisation.txt
+│       ├── 06-information-security-and-integrity.txt
+│       ├── 07-data-protection-by-design.txt
+│       ├── 08-statistical-accuracy.txt
+│       ├── 09-discrimination-and-bias.txt
+│       └── 10-human-review.txt
 ├── deployer/                                             (DEP — Novara core policy)
 │   ├── novara-ai-policy-v3.1.pdf
 │   └── novara-ai-policy-v3.1.txt                        (extracted text)
@@ -165,10 +173,10 @@ Total fictive supporting corpus: approximately 20–25 pages.
 | Bucket | File count | Approximate word count |
 |---|---|---|
 | Regulation | 11 files (AI Act PDF + extracted .txt; 8 GDPR articles + consolidated cluster) | 90,000–100,000 |
-| Operational | 18 files (10 ICO main guidance + 6 GenAI consultation + 2 audit framework) | 50,000–60,000 |
+| Operational | 26 files (10 ICO main guidance + 6 GenAI consultation + 10 audit framework) | 60,000–70,000 |
 | Deployer (Novara core) | 2 files (PDF + extracted .txt) | 4,000–5,000 |
 | Deployer-extras | 5 files | 8,000–12,000 |
-| **Total** | **36 files** | **~155,000–175,000 words** |
+| **Total** | **44 files** | **~165,000–185,000 words** |
 
 After chunking (paragraph-level for legal text, sentence-clusters for prose, row-level for ICO Risk Toolkit if included), expect approximately 3,000–5,000 chunks. This is well within in-memory NumPy retrieval capacity (cosine similarity over a 5,000 × 384 matrix is sub-millisecond).
 
