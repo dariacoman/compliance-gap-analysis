@@ -91,11 +91,11 @@ For silence detection in CHN-04 phase 1, use the maximum cosine similarity from 
 
 ## 7. Demo persona
 
-**Decided:** **Maya, Head of AI Compliance**, at Novara.
+**Decided:** **Maya, Head of AI Compliance** — used as a **drafting voice for the 5 hand-written test queries only**. Not named in the UI, not named in the report, not part of the demo narrative.
 
-**Why:** Plausible mid-size-AI-company role. Senior enough to ask broad strategic questions ("are we compliant under Annex III?") and technical enough to ask narrow ones ("does the DPIA cover Article 9 special category data?"). Single persona keeps the demo coherent.
+**Why:** A single coherent voice for the queries (direct, regulatory-shorthand-comfortable: "Art 22", "Annex III §4") makes them sound like real compliance prose rather than a heterogeneous test set. But the system itself doesn't need a named persona on screen — markers reward the substance of the gap-surfacing claim, not a UX framing. Keeping Maya backstage preserves the query-quality benefit while avoiding extra surface area to defend in viva.
 
-Use Maya's voice for the 5 hand-written test queries: direct, slightly clipped, comfortable with regulatory shorthand ("Art 22", "Annex III §4"). Examples drafted in `docs/build-readiness.md`.
+**Override note (2026-05-04):** Daria's earlier instruction was to drop the persona entirely. After review of the test queries (calibrated to the gates and grounded in real policy gaps), the option-3 compromise was adopted: keep Maya as drafting voice only; never expose her in user-facing artefacts. The drafted queries keep their existing voice.
 
 ---
 
@@ -153,4 +153,7 @@ Decisions made *during* the build go here, newest first. Format:
 **Updates `build-notes.md`?** [yes/no]
 ```
 
-(Empty for now.)
+### Maya persona scope narrowed to drafting voice only — pre-build review (2026-05-04)
+**Decided:** Override decision #7 to scope Maya as a drafting persona for test queries; remove her from any user-facing artefact (UI, report, demo).
+**Reason:** Reconciles Daria's earlier "no demo persona" instruction with Bogdan's pre-built queries that lean on a single coherent voice — keeps the query quality, drops the on-screen exposure.
+**Updates `build-notes.md`?** No (build-notes never named a persona).
