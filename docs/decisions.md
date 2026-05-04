@@ -18,13 +18,17 @@
 
 ## 2. `confidence` value for silent rows
 
-**Decided:** **`high`**.
+**Decided:** **`high`**. Reaffirmed 2026-05-04 after user concern about response-quality pollution.
 
 **Why:** Silent classification is *deterministic* — `max_sim < τ` is a mechanical comparison, not an LLM judgment. The system is highly confident *that the policy is silent on this obligation*. Calling it `low` would imply uncertainty about the silence verdict, which is the opposite of what's true.
 
-**Considered:** Adding a fourth value (`n/a` or empty) for silent rows.
+**Why this doesn't pollute response quality (reaffirmed 2026-05-04):** The `confidence` field is **post-hoc metadata** populated by chain code after CHN-05 — it never enters any prompt, doesn't influence retrieval, and doesn't change classification. Setting silent rows to `confidence: high` is a labelling decision, not a quality lever. Response quality is governed by retrieval recall (RET), obligation extraction (CHN-03), and the classifier (CHN-04 Phase 2); none of those touch this field. Two distinct concerns can be conflated here: (a) "are too many silent rows being flagged?" is a τ-tuning question, addressed by decision #4 at the retrieval-config freeze gate; (b) "do high-confidence silent rows look indistinguishable from high-confidence adequate rows in the UI?" is a presentation question, addressed by SCH-01 and UI-01's mandated visible marker on silent rows ("no policy chunk above similarity τ"). Neither concern is a quality risk on the chain output itself.
 
-**Why not:** Adds a special case to a clean three-value enum. The UI would need branching logic, and "high confidence the policy is silent" is the truthful answer anyway.
+**Considered:** Adding a fourth value (`n/a` or empty) for silent rows; reversing to `silent → low` to signal structural distinction.
+
+**Why not:** `n/a` adds a special case to a clean three-value enum. `silent → low` is misleading — implies LLM uncertainty when none exists. If the Streamlit prototype reveals user confusion in week 5, the cleanest fix is FLEX-4: extend the enum to `low / medium / high / structural` (~30 min schema tweak + UI renderer update), not retreat from the structural-honesty position.
+
+**Watch trigger to revisit (2026-05-04):** Streamlit prototype review at week 5 — observe whether high-confidence silent rows feel indistinguishable from high-confidence adequate rows on a multi-sub-question query. Eval-phase demo rehearsal — if marker preview / domain-expert review surfaces confusion, FLEX-4 to add a `structural` enum value is the documented escalation.
 
 ---
 
@@ -59,16 +63,25 @@
 
 **Decided:** Estimate prompt token count before the call (`len(prompt_string) // 3.5` for English). Fall through to per-obligation classification (FLEX-1) for *just this sub-question* if the estimate exceeds:
 
-- **5,000 tokens** on Gemma 2-2B-it (8K context, ~3K reserved for response)
-- **15,000 tokens** on Llama 70B via Groq (generous context, but Groq free-tier TPM limits favour shorter prompts)
+- **5,000 tokens** on Gemma 2-2B-it (8K context, ~3K reserved for response — context window is the binding constraint)
+- **15,000 tokens** on Llama 70B via Groq — **placeholder, to be tuned at the retrieval-config freeze gate** (see watch trigger below)
 
 Log the fall-through in verbose mode (CHN-06) so it's visible when it fires.
 
-**Why these numbers:** Conservative headroom against silent truncation. Gemma's context is the real constraint; 5K input + 3K response fits 8K with margin. Llama on Groq is typically rate-limited before context-limited, so 15K is comfortable.
+**Why these numbers (revised 2026-05-04):** Gemma's 5K is well-grounded — context window 8K minus ~3K reserved for response. The Llama number is harder to pin down before we see real prompt sizes:
 
-**Considered:** No guard, always batch and hope; always per-obligation, never batch.
+- Llama 3.3 70B has a **128K context window** — context is *not* the binding constraint.
+- **The binding constraint is Groq's free-tier rate limit:** TPM 12K, TPD 100K, RPM 30, RPD 1K (per `console.groq.com/docs/rate-limits`).
+- A single prompt above ~10–11K tokens consumes the entire per-minute TPM budget, so the next call gets throttled.
+- TPD 100K caps fully-uncached chain queries at ~10 per day before throttling — cache pre-warming (LLM-06) is essential.
 
-**Why not no-guard:** Silent truncation corrupts classifications without a visible error — exactly the failure mode that destroys trust in the demo. **Why not always-per-obligation:** ~3× more LLM calls per query; free-tier rate limits become the bottleneck and uncached query latency triples.
+The 15K placeholder is fine because failure is graceful: if the guard lets a 15K prompt through and Groq rate-limits it, `RoutingClient` catches the error and falls back to Gemma (LLM-05's hardcoded policy). Worst case is one slow call, not a corrupted register.
+
+**Watch trigger (2026-05-04):** instrument CHN-04 to log estimated prompt size in verbose mode. At the retrieval-config freeze gate (end of week 2), tabulate prompt-size distribution across the 5 hand-written queries; tighten or loosen the Llama guard based on observation. Build-time observation tracked as BO-007 in the private build plan.
+
+**Considered:** No guard, always batch and hope; always per-obligation, never batch; commit to a tight 9K Llama guard now.
+
+**Why not no-guard:** Silent truncation corrupts classifications without a visible error — exactly the failure mode that destroys trust in the demo. **Why not always-per-obligation:** ~3× more LLM calls per query; rate limits become the bottleneck and uncached query latency triples. **Why not commit-9K-now:** premature without empirical prompt sizes; 15K-with-graceful-fallback is the same outcome with less re-tuning friction.
 
 ---
 
@@ -152,6 +165,16 @@ Decisions made *during* the build go here, newest first. Format:
 **Reason:** [one sentence — what tipped the call]
 **Updates `build-notes.md`?** [yes/no]
 ```
+
+### Decision #5 token guard — Llama number revised to placeholder + watch (2026-05-04)
+**Decided:** Keep 15K Llama guard as a placeholder; tune at the retrieval-config freeze gate (end of week 2) using empirical prompt-size logging from the 5 hand-written queries. Gemma 5K stays unchanged.
+**Reason:** Verified Groq's actual free-tier limits (TPM 12K, TPD 100K, RPM 30, RPD 1K, context 128K). Hard-committing the Llama number before observing real prompt sizes is premature; failure is graceful (rate-limit → Gemma fallback via RoutingClient).
+**Updates `build-notes.md`?** No (build-notes does not list specific guard values).
+
+### Decision #2 silent-row confidence — rationale extended for response-quality concern (2026-05-04)
+**Decided:** Keep `confidence: high` for silent rows. Watch trigger added: revisit at week-5 Streamlit prototype review or eval-phase demo rehearsal.
+**Reason:** User concern that `confidence: high` could pollute response quality. Verified that the field is post-hoc metadata (never enters prompts, doesn't influence retrieval/classification) — it cannot affect chain quality. UX disambiguation is handled by the spec-mandated UI marker on silent rows. If user confusion appears at the prototype gate, FLEX-4 to add a `structural` enum value is the cleanest escalation.
+**Updates `build-notes.md`?** No.
 
 ### Maya persona scope narrowed to drafting voice only — pre-build review (2026-05-04)
 **Decided:** Override decision #7 to scope Maya as a drafting persona for test queries; remove her from any user-facing artefact (UI, report, demo).
