@@ -166,6 +166,20 @@ Decisions made *during* the build go here, newest first. Format:
 **Updates `build-notes.md`?** [yes/no]
 ```
 
+### ING-01 implementation decisions — 2026-05-04
+**Decided (4 sub-decisions, all on the same implementation):**
+
+1. **ING-01 outputs file-level chunks (~42), not the spec's "50–80".** The spec's success-condition number is treated as a stale pre-corpus-expansion estimate. ING-01 produces one chunk per text file in the manifest (44 entries minus 2 PDFs = 42); ING-02 owns the structural split that brings the count up to the corpus spec § 4 estimate of 3,000–5,000.
+2. **Four-bucket `corpus_tag` scheme: `REG / OPS / DEP / DEP_EXTRAS`.** The manifest's three-value `corpus_tag` (REG/OPS/DEP) is split into four at load time: paths under `deployer/` → `DEP`, paths under `deployer-extras/` → `DEP_EXTRAS`. This gives the chain a clean filter when populating `policy_evidence` vs `extras_evidence` per SCH-01 fields, without touching the manifest.
+3. **Skip manifest entries with `word_count == 0`.** The two PDFs (AI Act + Novara policy) are present for citation provenance only; their `.txt` siblings are the canonical retrieval source per `v2_corpus_specification.md` § 2. The `word_count == 0` field is the manifest's existing signal.
+4. **`chunk_id` is the file path with the extension stripped** — e.g., `regulation/uk-gdpr-art-22`, `operational/ico-main-guidance/03-transparency`. Globally unique by filesystem invariant.
+
+**Deviation from plan (worth recording):** the plan committed to `chunk_id = "{corpus_tag}:{document_id}"` claiming this was "collision-free given path uniqueness". This was wrong: the OPS bucket has three sub-folders (`ico-main-guidance/`, `ico-genai-consultation/`, `ico-audit-framework/`), and `ico-main-guidance/03-transparency.txt` and `ico-audit-framework/03-transparency.txt` share the same stem and same tag — same chunk_id under the original scheme. The uniqueness test (`test_chunk_ids_are_unique_across_corpus`) caught it. Path-based IDs sidestep the collision.
+
+**Reason:** simplicity + readability + structural correctness. Path-based IDs are debuggable (the chunk's origin is in its name), stable across runs, and provably unique. `document_id` (just the stem) remains a separate field on `Chunk` for human-readable citation.
+
+**Updates `build-notes.md`?** No (build-notes does not specify implementation-level identifier formats).
+
 ### Skip AI Act recitals during ING-02 chunking — pre-build review (2026-05-04)
 **Decided:** ING-02 starts chunking the EU AI Act `.txt` from line 3915 (Article 1) onward. Recitals 1–180 (lines ~60–3914) are excluded from the chunked content.
 **Reason:** Recitals are interpretive paragraphs explaining *why* each provision exists; they're not directly enforceable obligations. Including them risks CHN-03 extracting pseudo-obligations from explanatory text and corrupting downstream classification — exactly the high-risk failure mode noted in the spec for CHN-03. The compliance gap analysis system's distinctive claim is that obligations are extracted from operative provisions and matched against deployer policy. Recitals carry no obligations; including them adds noise without clear retrieval benefit. Reasoning recorded in full at `docs/ai-act-extraction-notes.md` § "Recitals — chunk or skip?".
