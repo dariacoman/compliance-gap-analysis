@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
+from pathlib import Path
 
 from src.ingestion import Chunk
 from src.llm.client import LLMClient
@@ -404,3 +405,46 @@ class ComplianceGapChain:
         if self.verbose:
             print(f"[CHN-05] synthesised {len(register)} rows")
         return register
+
+
+# ----- factory -----------------------------------------------------------
+
+
+def build_chain(
+    *,
+    manifest_path: Path = Path("corpus/manifest.json"),
+    cache_dir: Path = Path("llm_cache"),
+    embeddings_dir: Path = Path("embeddings"),
+    model_name: str = "multi-qa-MiniLM-L6-cos-v1",
+    use_routing: bool = True,
+    verbose: bool = False,
+) -> ComplianceGapChain:
+    """End-to-end factory: retriever + RoutingClient + cache → chain.
+
+    `use_routing=True` wires the production primary→fallback path
+    (GroqLlama70B + LocalGemma2B); `use_routing=False` returns just
+    GroqLlama70B for FLEX-6 strip-down readiness.
+
+    Mirrors `build_retriever()` from `src.retrieval`. The notebook /
+    REPL / future entry points call this once at startup.
+    """
+    from src.llm.adapters import GroqLlama70B, LocalGemma2B
+    from src.llm.cache import DiskCache
+    from src.llm.routing import RoutingClient
+    from src.retrieval import build_retriever
+
+    retriever = build_retriever(
+        manifest_path=manifest_path,
+        model_name=model_name,
+        cache_dir=embeddings_dir,
+    )
+    cache = DiskCache(cache_dir=cache_dir)
+
+    if use_routing:
+        primary = GroqLlama70B(cache=cache)
+        fallback = LocalGemma2B(cache=cache)
+        client: LLMClient = RoutingClient(primary, fallback)
+    else:
+        client = GroqLlama70B(cache=cache)
+
+    return ComplianceGapChain(retriever, client, verbose=verbose)

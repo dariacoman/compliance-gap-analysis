@@ -166,6 +166,22 @@ Decisions made *during* the build go here, newest first. Format:
 **Updates `build-notes.md`?** [yes/no]
 ```
 
+### UI cluster — Jupyter-only (UI-02) implementation decisions — 2026-05-04
+**Decided (7 sub-decisions; 6 plan-aligned + 1 refinement caught by capsys):**
+
+1. **UI-01 Streamlit deliberately not pursued** — spec § UI-01's own caveat ("If UI-01 destabilises late in the build, fall back to UI-02 — Jupyter is brief-acceptable") was invoked proactively rather than reactively. Daria's call 2026-05-04 after the chain landed and live smoke verified end-to-end behaviour. **Trade-off accepted:** less visual polish for demo-day in exchange for material risk reduction (no Streamlit framework, no `@st.cache_resource` lifecycle, no dev-server / browser verification step). The system's intellectual contribution sits in the chain, not the UI chrome; a printed register with chunk_ids and section_references gives a marker everything they need to verify findings. **Defendable viva narrative:** "We chose Jupyter per the spec's brief-acceptable fallback to keep the build envelope tight; the system's distinctive contribution is in the chain, not the UI."
+2. **`build_chain()` factory in `src/chain.py`** — mirrors `build_retriever()` from `src/retrieval.py`. Used by the notebook + REPL + future entry points; orchestrates retriever + RoutingClient + DiskCache wiring in one call. `use_routing=True` (default) wires the production primary→fallback path; `use_routing=False` returns just `GroqLlama70B` for FLEX-6 strip-down readiness.
+3. **Chat loop logic lives in `src/ui/notebook_chat.py`, notebook is a 3-cell shell** — keeps the loop testable in pytest; notebook stays a thin import-and-invoke wrapper with `%autoreload 2` for iterative development.
+4. **Plain-text rendering with ASCII separators + emoji status glyphs (option A, Daria's pick 2026-05-04)** — works in any terminal, any Jupyter kernel output, and in plain stdout. No IPython.display dependency. Glyphs (🔴 silent · 🟠 partial · 🟢 adequate · 🟣 contradictory) carry status colour without needing markdown rendering.
+5. **Silent-row explanatory marker is a single line under the obligation** — "⚠ Silent: no policy chunk above similarity τ — policy is silent on this obligation." Honours the spec's UI-01 success condition language at text-level granularity.
+6. **`conftest.py` auto-loads `.env` at session start** — `build_chain()` constructs a real `GroqLlama70B` which requires `GROQ_API_KEY` in env. Tests that exercise the factory now succeed regardless of shell-env state. Skips lines with the placeholder value (`PASTE_YOUR_GROQ_KEY_HERE`); uses `os.environ.setdefault` so explicit shell env always wins.
+
+**Refinement caught by capsys:**
+
+7. **`print_register(file=None)` resolves `sys.stdout` at call time, not import time** *(refinement, caught by `test_chat_runs_chain_on_query_and_prints_register`)*. Initial design used `file=sys.stdout` as default argument — Python evaluates default args at function-definition time, so `file` ended up bound to the original stdout. When pytest's `capsys` redirected stdout, `print_register` still wrote to the original, and the captured-output assertion failed. Fix: default `file=None`, resolve to `sys.stdout` inside the body.
+
+**Updates `build-notes.md`?** No (UI-01-vs-UI-02 choice is in spec § UI-01's own caveat language; no architectural commitment changes).
+
 ### Schema (SCH-01) + chain (CHN-01..07) + LLM-07/08 implementation decisions — 2026-05-04
 **Decided (12 sub-decisions; 9 plan-aligned + 3 forced corrections from the live API smoke):**
 

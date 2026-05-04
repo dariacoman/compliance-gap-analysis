@@ -1,8 +1,33 @@
+import os
 from pathlib import Path
 
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_dotenv() -> None:
+    """Load `.env` into os.environ for the test session.
+
+    Tests that construct real adapter clients (e.g., `build_chain()`'s
+    `GroqLlama70B`) need `GROQ_API_KEY` available even when not running
+    under `pytest -m live_api`. The `.env` file is gitignored.
+    """
+    env_file = PROJECT_ROOT / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if value and value != "PASTE_YOUR_GROQ_KEY_HERE":
+            os.environ.setdefault(key, value)
+
+
+_load_dotenv()
 
 
 def pytest_configure(config):
