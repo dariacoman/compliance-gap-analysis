@@ -71,18 +71,26 @@ def _parse_json_list(raw: str) -> list[Any]:
     return parsed
 
 
-def _format_chunks(chunks: list[Any]) -> str:
+_CHUNK_SNIPPET_LIMIT = 400  # chars per chunk in the prompt — keeps batched
+                            # classifier prompts under Groq's 12K TPM ceiling
+                            # for the build-phase corpus shape.
+
+
+def _format_chunks(chunks: list[Any], *, snippet_limit: int = _CHUNK_SNIPPET_LIMIT) -> str:
     """Format retrieved chunks into a prompt-friendly string.
 
-    Each chunk is rendered as `[chunk_id] section_reference: chunk_text`
-    so the LLM can cite chunk_ids in its output. Tolerates duck-typed
-    chunks (real Chunk dataclass or test stubs with the same fields).
+    Each chunk is rendered as `[chunk_id] section_reference: snippet`
+    where snippet is at most `snippet_limit` characters. Truncating
+    keeps the batched classifier prompt under Groq's TPM cap when many
+    chunks are aggregated across obligations.
     """
     lines = []
     for c in chunks:
         cid = getattr(c, "chunk_id", "?")
         section = getattr(c, "section_reference", "")
         text = getattr(c, "chunk_text", "")
+        if len(text) > snippet_limit:
+            text = text[:snippet_limit] + "…"
         lines.append(f"[{cid}] {section}: {text}")
     return "\n\n".join(lines)
 

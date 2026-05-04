@@ -166,6 +166,31 @@ Decisions made *during* the build go here, newest first. Format:
 **Updates `build-notes.md`?** [yes/no]
 ```
 
+### Schema (SCH-01) + chain (CHN-01..07) + LLM-07/08 implementation decisions — 2026-05-04
+**Decided (12 sub-decisions; 9 plan-aligned + 3 forced corrections from the live API smoke):**
+
+1. **Two distinct types: `Obligation` (chain state) and `RegisterRow` (schema output)** (per plan). Obligation accumulates state through Steps 3–5 with optional fields; RegisterRow is the frozen 9-field deliverable. Cleaner separation than one type with progressively-populated optionals.
+2. **`EvidenceCitation` carries `score` alongside `chunk_id` and `section_reference`** (per plan). Confidence derivation needs the cosine score; score lives next to the citation it scored.
+3. **`regulatory_provision` derives from the highest-scoring retrieved chunk's `section_reference`** (per plan). All obligations from the same sub-question share this label.
+4. **CHN-04 retrieves deployer-side evidence ONCE per corpus per obligation (3 retrieval calls)** *(deviation from the plan, aligned with `decisions.md §6`'s "5 chunks per deployer-side corpus")*. Plan said one retrieval with combined filter; spec wanted up to 5 per corpus. Three calls per obligation × top_k=5 each = up to 15 candidate evidence chunks per obligation, deduped before the batched classifier.
+5. **Token guard is logged-warning placeholder, not active fall-through** (per plan). First pass observes prompt sizes via verbose mode. BO-007 watch trigger fires for tightening at the freeze gate.
+6. **`Obligation` mutation via `dataclasses.replace()`** (per plan). Frozen dataclass + immutable updates.
+7. **Verbose mode is print-to-stdout, no structured logging** (per plan). Per spec § CHN-06.
+8. **`_derive_confidence` is module-level pure function** (per plan). Testable without a chain instance.
+9. **Synthesise step matches enriched LLM output back to obligations by `obligation` text, not by position** (refinement during implementation). LLM may reorder or drop items; positional zip would silently mismatch.
+
+**Forced corrections from the live API smoke run** (`pytest -m live_api`):
+
+10. **`_format_chunks` truncates each chunk text to 400 characters in the prompt** *(forced fix; classifier prompt initially 13,342 tokens vs Groq's 12K TPM ceiling)*. Aggregating evidence across multiple obligations dedupes to ~30–50 unique chunks; full chunk text would blow TPM. 400-char snippets cut prompt size ~70%; the LLM still classifies competently because it sees chunk_id + section_reference + opening 400 chars.
+11. **`RoutingClient._is_rate_limit` recognises Groq's 413 + `code='rate_limit_exceeded'` as a rate-limit signal** *(forced fix; Groq returns 413 for token-budget violations, not the 429 that `groq.RateLimitError` covers)*. Without this, oversized prompts would propagate as `APIStatusError` rather than triggering fallback. Documented in routing.py.
+12. **`GroqLlama70B` `max_tokens` raised from 2000 to 4000** *(forced fix; synthesise step truncated mid-JSON-array on Q5)*. 4K out leaves ~8K input headroom under the 12K TPM ceiling. Synthesise output for ~5 obligations at ~250 tokens of JSON each fits comfortably.
+
+**Live API observation worth recording (forward signal for the freeze gate):**
+
+13. **FRIA obligations classify as `partial` not `silent` at τ=0.35** *(observation from the live Q5 smoke run)*. Even at the obligation level, the deployer-side cosine for FRIA-shaped obligations exceeds τ=0.35 — the ICO main guidance + audit framework chapters carry "fundamental rights" / "impact assessment" vocabulary that pulls scores above the threshold. This is the same observation logged at the RET-01 spot-check, now confirmed at obligation granularity. **Implication:** the freeze-gate τ histogram check (per decisions.md §4) is genuinely load-bearing — τ=0.35 may need to lift to capture FRIA as silent. Not a bug now; the conservative-bias rationale (false-silence preferred over false-address) holds, and false-address would be the dangerous error this avoids. Tracked in build-plan.md as a forward note for the freeze gate.
+
+**Updates `build-notes.md`?** No (build-notes does not specify implementation-level prompt or token policy).
+
 ### LLM cluster (LLM-01..06) implementation decisions — 2026-05-04
 **Decided (8 sub-decisions; 6 plan-aligned + 2 deviations + 1 minor refinement caught by test/REPL feedback):**
 

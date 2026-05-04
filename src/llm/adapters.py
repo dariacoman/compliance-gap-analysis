@@ -47,12 +47,14 @@ class GroqLlama70B(BaseLLMClient):
         api_key: str | None = None,
         cache: DiskCache | None = None,
         temperature: float = 0.0,
-        max_tokens: int = 2_000,
+        max_tokens: int = 4_000,
     ) -> None:
         super().__init__(cache=cache)
         from groq import Groq
         self._client = Groq(api_key=api_key or os.environ.get("GROQ_API_KEY"))
         self._temperature = temperature
+        # 4K out leaves ~8K for input under the free-tier 12K TPM ceiling;
+        # synthesise step's per-obligation JSON objects need the headroom.
         self._max_tokens = max_tokens
 
     def _complete(self, prompt: str) -> str:

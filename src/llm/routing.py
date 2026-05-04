@@ -35,12 +35,31 @@ from src.llm.client import LLMClient
 
 
 def _is_rate_limit(exc: BaseException) -> bool:
-    """Return True if the exception is a Groq RateLimitError."""
+    """Return True if the exception is a Groq rate-limit signal.
+
+    Groq returns proper 429 (`groq.RateLimitError`) for rolling-window
+    throttling, but for per-request token-budget violations on the
+    free tier it returns HTTP 413 with `code='rate_limit_exceeded'`
+    (a `groq.APIStatusError`, not a `RateLimitError`). We treat both
+    as rate-limit conditions that should trigger fallback.
+    """
     try:
         import groq
-        return isinstance(exc, groq.RateLimitError)
     except ImportError:
         return False
+    if isinstance(exc, groq.RateLimitError):
+        return True
+    if isinstance(exc, groq.APIStatusError):
+        # Inspect the body for Groq's structured rate-limit code.
+        body = getattr(exc, "body", None) or {}
+        err = (body.get("error") or {}) if isinstance(body, dict) else {}
+        if err.get("code") == "rate_limit_exceeded":
+            return True
+        # Fallback heuristic: HTTP 413 + "tokens per minute" message.
+        msg = str(getattr(exc, "message", "") or "")
+        if "tokens per minute" in msg.lower():
+            return True
+    return False
 
 
 def _is_network(exc: BaseException) -> bool:
