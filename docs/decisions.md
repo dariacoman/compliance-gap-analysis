@@ -166,6 +166,26 @@ Decisions made *during* the build go here, newest first. Format:
 **Updates `build-notes.md`?** [yes/no]
 ```
 
+### RET-01 implementation decisions — 2026-05-04
+**Decided (5 sub-decisions, all aligned with the approved plan; one Apple-Silicon-specific fix during testing):**
+
+1. **`ChunkEmbeddingRetriever` constructed with already-embedded inputs; `build_retriever()` factory orchestrates the pipeline** (per plan). Tests construct the class directly with stub data; the chain wires the factory once at startup. `build_retriever` reuses the ING-03 SentenceTransformer singleton, so the model is loaded exactly once across ingestion + retrieval.
+2. **`corpus_filter` accepts both `str` and `Sequence[str]` forms** (per plan). Call sites read naturally: `retrieve(q, corpus_filter="REG")` for CHN-02 regulation-only and `retrieve(q, corpus_filter=("DEP", "DEP_EXTRAS", "OPS"))` for CHN-04 silence detection.
+3. **Linear filter scan over chunks at retrieval time, not pre-computed boolean masks** (per plan). At 1,140 chunks the filter is sub-millisecond; pre-computing masks is premature. The latency target (under 200ms top-5) is met without it — measured 17.10s for 19 tests including warm-up + multiple full-corpus retrievals = average <100ms per call.
+4. **`build_retriever` reuses `_get_st_model` from `src.ingestion`** (per plan). Cross-module use of a private helper is contained to one orchestration site. Will rename `_get_st_model` → public when a third caller appears (likely never; the factory is the only orchestration site).
+5. **Returned scores are raw `float`s in [-1, 1]** (per plan). `util.dot_score` on already-L2-normalised vectors equals cosine similarity. CHN-04 thresholds against this directly with τ. No surface area for silent rounding errors.
+
+**Apple-Silicon device-mismatch fix:**
+
+6. **Query embedded with `convert_to_numpy=True`, not `convert_to_tensor=True`** *(fix, caught by all 10 integration tests on first run)*. With `convert_to_tensor=True`, `SentenceTransformer.encode` produces an MPS-device tensor on Apple Silicon (PyTorch's Metal backend), while the chunk embeddings stored from ING-03 are CPU numpy arrays. `util.dot_score` then errors with `RuntimeError: Tensor for argument #2 'mat2' is on CPU, but expected it to be on GPU`. Switching the query path to numpy keeps both sides on CPU, lets `util.dot_score` handle device-uniform conversion, and works portably across CPU-only / MPS / CUDA hardware. Inline comment in `src/retrieval.py` records the rationale.
+
+**Spot-check observations (REPL, 2026-05-04):**
+- Q5 ("FRIA Article 27") top-5 includes `EU AI Act Article 27 (para-1)` at 0.736 and `(para-4)` at 0.673 — strong on-target retrieval.
+- Q3 (Art 22 sub-clauses) top-5 surfaces UK GDPR Article 22, ICO Main Guidance Article 22 fairness chapter, and Individual rights chapters — diverse multi-corpus signal.
+- Q5 with `corpus_filter=("DEP", "DEP_EXTRAS", "OPS")` yields top hits in [0.459, 0.515] — all *above* τ=0.35 default. This is the silence-detection shape; on the broad query the deployer side has tangential matches (ICO chapters mentioning "fundamental rights" in passing). Worth flagging at the freeze-gate τ histogram check: the chain operates on *extracted obligations* (CHN-03 output), not on raw user queries, so the actual silence detection signal will use a more specific embedding than what the spot-check exercises here. Recorded as a forward observation for the freeze gate, not a present concern.
+
+**Updates `build-notes.md`?** No (build-notes does not specify implementation-level retrieval signatures).
+
 ### ING-03 implementation decisions — 2026-05-04
 **Decided (5 sub-decisions, all aligned with the approved plan; one minor refinement during testing):**
 

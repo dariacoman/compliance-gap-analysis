@@ -31,3 +31,13 @@ def corpus_embeddings(corpus_chunks, tmp_path_factory):
     from src.ingestion import embed_chunks
     cache_dir = tmp_path_factory.mktemp("ing03_cache")
     return embed_chunks(corpus_chunks, cache_dir=cache_dir)
+
+
+@pytest.fixture(scope="session")
+def corpus_retriever(corpus_chunks, corpus_embeddings):
+    """RET-01 retriever wired against the real corpus + embeddings."""
+    from src.ingestion import _get_st_model
+    from src.retrieval import ChunkEmbeddingRetriever
+    embeddings, chunk_ids = corpus_embeddings
+    model = _get_st_model("multi-qa-MiniLM-L6-cos-v1")
+    return ChunkEmbeddingRetriever(corpus_chunks, embeddings, chunk_ids, model)
