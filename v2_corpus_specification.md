@@ -24,22 +24,34 @@ The system queries against all four; the residual-risk register surfaces gaps be
 ```
 corpus/
 ├── manifest.json                                         (auto-generated; provenance + hashes)
+├── manifest.md                                           (human-readable companion to manifest.json)
 ├── regulation/                                           (REG)
 │   ├── eu-ai-act-2024-1689.pdf                          (full Regulation EU 2024/1689)
 │   ├── eu-ai-act-2024-1689.txt                          (extracted text)
 │   ├── uk-gdpr-articles-relevant.txt                    (consolidated cluster: Arts 5, 6, 9, 13, 14, 22, 28, 35)
 │   └── uk-gdpr-art-{N}.txt                              (individual articles for chunking)
 ├── operational/                                          (OPS)
-│   └── ico-ai-guidance/
-│       ├── 01-about.txt
-│       ├── 02-accountability-governance.txt
-│       ├── 03-transparency.txt
-│       ├── 04-lawfulness.txt
-│       ├── 05-accuracy.txt
-│       ├── 06-fairness.txt
-│       ├── 07-individual-rights.txt
-│       ├── 08-security-data-minimisation.txt
-│       └── 09-article-22-fairness.txt                   (special focus chapter)
+│   ├── ico-main-guidance/
+│   │   ├── 01-about.txt
+│   │   ├── 02-accountability-governance.txt
+│   │   ├── 03-transparency.txt
+│   │   ├── 04-lawfulness.txt
+│   │   ├── 05-accuracy.txt
+│   │   ├── 06-fairness.txt
+│   │   ├── 07-article-22-fairness.txt                   (special focus chapter)
+│   │   ├── 08-individual-rights.txt
+│   │   ├── 09-security-data-minimisation.txt
+│   │   └── 10-annex-a-fairness-lifecycle.txt
+│   ├── ico-genai-consultation/                          (per § 3.2 optional additions — included)
+│   │   ├── 01-executive-summary.txt
+│   │   ├── 02-lawful-basis-web-scraping.txt
+│   │   ├── 03-purpose-limitation.txt
+│   │   ├── 04-accuracy-training-data.txt
+│   │   ├── 05-individual-rights-engineering.txt
+│   │   └── 06-controllership-supply-chain.txt
+│   └── ico-audit-framework/                             (additional extension — included)
+│       ├── 01-overview.txt
+│       └── 02-governance-accountability.txt
 ├── deployer/                                             (DEP — Novara core policy)
 │   ├── novara-ai-policy-v3.1.pdf
 │   └── novara-ai-policy-v3.1.txt                        (extracted text)
@@ -47,8 +59,8 @@ corpus/
     ├── novara-talentlens-model-card.md
     ├── novara-talentlens-dpia.md
     ├── novara-talentlens-transparency-notice.md
-    ├── novara-2025-annual-ai-governance-report.md
-    └── novara-model-intake-assessment-template-talentlens.md
+    ├── novara-2025-ai-governance-report.md
+    └── novara-talentlens-model-intake-assessment.md
 ```
 
 Each text file is the canonical retrieval source. Original PDF/HTML files stay in the corpus folder for citation provenance and for the report's appendix (the marker may want to verify cited content against original sources).
@@ -150,13 +162,13 @@ Total fictive supporting corpus: approximately 20–25 pages.
 
 ## 4. Corpus size and retrieval characteristics
 
-| Bucket | Approximate file count | Approximate word count |
+| Bucket | File count | Approximate word count |
 |---|---|---|
-| Regulation | 9 files | 90,000–100,000 |
-| Operational | 9 files | 50,000–60,000 |
-| Deployer (Novara core) | 1 file | 4,000–5,000 |
+| Regulation | 11 files (AI Act PDF + extracted .txt; 8 GDPR articles + consolidated cluster) | 90,000–100,000 |
+| Operational | 18 files (10 ICO main guidance + 6 GenAI consultation + 2 audit framework) | 50,000–60,000 |
+| Deployer (Novara core) | 2 files (PDF + extracted .txt) | 4,000–5,000 |
 | Deployer-extras | 5 files | 8,000–12,000 |
-| **Total** | **24 files** | **~155,000–175,000 words** |
+| **Total** | **36 files** | **~155,000–175,000 words** |
 
 After chunking (paragraph-level for legal text, sentence-clusters for prose, row-level for ICO Risk Toolkit if included), expect approximately 3,000–5,000 chunks. This is well within in-memory NumPy retrieval capacity (cosine similarity over a 5,000 × 384 matrix is sub-millisecond).
 

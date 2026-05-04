@@ -232,12 +232,12 @@
   {
     "path": "operational/ico-audit-framework/01-overview.txt",
     "corpus_tag": "OPS",
-    "size_bytes": 360,
-    "sha256_short": "dd31f60ed52b29d9",
-    "word_count": 62,
+    "size_bytes": 636,
+    "sha256_short": "2ba684db737644bc",
+    "word_count": 96,
     "source_url": "https://ico.org.uk/for-organisations/advice-and-services/audits/data-protection-audit-framework/toolkits/artificial-intelligence/",
     "doc_pub_date": "\u2014",
-    "fetch_date": "2026-05-02"
+    "fetch_date": "2026-05-04"
   },
   {
     "path": "operational/ico-audit-framework/02-governance-accountability.txt",
