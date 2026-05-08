@@ -337,3 +337,91 @@ Both stub files (`tests/test_smoke.py`, `tests/test_typing.py`) exist from PR #3
 **Decided:** Override decision #7 to scope Maya as a drafting persona for test queries; remove her from any user-facing artefact (UI, report, demo).
 **Reason:** Reconciles Daria's earlier "no demo persona" instruction with Bogdan's pre-built queries that lean on a single coherent voice — keeps the query quality, drops the on-screen exposure.
 **Updates `build-notes.md`?** No (build-notes never named a persona).
+
+### Greedy (deterministic) decoding for the simplified architecture's LLM call — 2026-05-06
+**Decided:** Configure local LLM generation with `do_sample=False` and `repetition_penalty=1.05`; explicitly do not use `temperature`, `top_p`, `top_k` (the model's `generation_config.json` ships with sampling defaults — they are loaded but inactive under greedy decoding).
+
+**Reason:** Compliance gap analysis requires deterministic output. Three concrete needs drove the choice:
+1. **Reproducibility for the marker.** Same query → same gap finding, every run. Stochastic outputs would weaken the report's empirical claims (we couldn't say "the system produces this output," only "the system probably produces something like this").
+2. **Cache effectiveness.** `DiskCache` keys responses on `(rendered_prompt, model_id)`. With sampling enabled, the cache would frequently disagree with fresh runs — same prompt, different output. Greedy keeps cache and live calls aligned.
+3. **Comparison across prompt iterations.** Testing V3 vs V4 (see `docs/test-passes/v4-qwen-1.5b-prompt-hygiene.md`) required attributing every output difference to the prompt change. Sampling noise would have masked or fabricated differences.
+
+The trade-off is that greedy decoding can produce slightly stilted or repetitive phrasing on some queries. We mitigate with `repetition_penalty=1.05` (soft discouragement of exact repetition without breaking grounded quotes from the chunks).
+
+**Considered alternative:** sampling enabled with `temperature=0.1` (low randomness, mostly-deterministic). Would produce slightly more natural phrasing for a creative-writing task. Rejected because compliance work prioritises consistency over phrasing variety; the cost of unreproducible output exceeds the benefit of varied phrasing.
+
+**Side effect — HF transformers warning.** Each generation call prints `"The following generation flags are not valid and may be ignored: ['temperature', 'top_p', 'top_k']"`. This is HF being polite: Qwen's `generation_config.json` ships with sampling defaults that we deliberately ignore. The warning is cosmetic; output is unaffected. We can suppress by passing `temperature=None, top_p=None, top_k=None` explicitly to `model.generate()` — deferred as low-priority polish.
+
+**Updates `build-notes.md`?** No (build-notes describes architecture, not generation parameters; parameters belong in the report's appendix per the brief's implementation-detail requirement).
+
+**For Daria's report appendix and viva:**
+- Report appendix: parameter table listing `do_sample=False`, `repetition_penalty=1.05`, brief rationale (deterministic for reproducibility).
+- Likely viva probe: *"why did you set temperature to zero?"* or *"did you consider letting the model be more creative?"* — the answer maps directly to the three reasons above (reproducibility, cache effectiveness, evaluation isolation), with the trade-off (slight phrasing stiffness vs sampling noise) acknowledged. ~60-second answer.
+
+### Colab as evaluation environment, local CPU as production demo — 2026-05-06
+**Decided:** The simplified path runs in two environments: (a) local CPU is the production demo path with `Qwen/Qwen2.5-1.5B-Instruct` as default; (b) Colab GPU is the evaluation environment for testing larger models (e.g. `Qwen/Qwen2.5-7B-Instruct`). The model identifier is read from a `MODEL_ID` environment variable; everything else is identical across environments. The Colab notebook (`colab/run_simplified_colab.ipynb`) clones the repo, sets `MODEL_ID`, and runs the same `analyse()` function. Outputs feed `docs/test-passes/` for cross-model comparison.
+
+**Reason:** Two needs pulled in opposite directions:
+1. **Demo reliability.** The local Qwen 1.5B path is offline, deterministic, and free. It runs without API keys, free-tier daily limits, or network dependencies — the demo on the day will not fail because of an external service. This is the production path.
+2. **Empirical capability assessment.** V4's negative finding (`docs/test-passes/v4-qwen-1.5b-prompt-hygiene.md`) showed that prompt design cannot fix the FRIA leak at 1.5B scale; the cause is training-data prior. Testing whether scale alone fixes it requires running 7B+ models, which the local CPU cannot accommodate.
+
+Splitting the codebase across environments would have created sync drift. Splitting the LLM call across machines (local retrieval + Colab-hosted LLM via tunnel) would have added networking complexity and ephemeral failure modes. Keeping one codebase, one entry point, and one config knob (`MODEL_ID`) gives both environments without forking the architecture.
+
+**Considered alternative — port the LLM call to a Colab-hosted endpoint** (ngrok / Cloudflare tunnel exposing a small FastAPI wrapper). Rejected: tunnel keep-alive, auth, network round-trips, and ephemeral session lifetimes added more risk than the simplification was worth for a master's project. The notebook approach has the same effect (use Colab's GPU) without the moving parts.
+
+**Considered alternative — commit pre-computed BGE embeddings to the repo** so Colab sessions skip the ~3 min re-encode. Rejected: BGE-large produces 1024-dim float32 vectors per chunk; binary blobs in git are awkward to review and bloat the repo for a 3-minute saving on infrequent evaluation runs. If iteration friction grows, mounting Google Drive and caching embeddings there is the documented escalation (see `colab/README.md`).
+
+**Side effect — model-id sync.** `LLM_MODEL_ID` is read from `os.environ` once at module import. Setting `MODEL_ID` after `import src.simplified` has no effect; the notebook sets it before importing. The order is documented in the `run_simplified_colab.ipynb` cell sequence.
+
+**Updates `build-notes.md`?** No (build-notes describes architecture, not deployment environments).
+
+**For Daria's report appendix and viva:**
+- Report appendix: brief description of the two-environment workflow and the rationale for keeping local as demo. Explains the design choice that lets her run on a Colab GPU for stronger empirical claims while keeping the demo reliable.
+- Likely viva probe: *"why didn't you just use the bigger model everywhere?"* — the answer is hardware reality (Qwen 7B OOMs on consumer CPUs in fp32) plus demo reliability (no Colab dependency on the day). ~30-second answer.
+
+### Per-family prompt design as a deployment consideration — 2026-05-07
+**Decided:** The simplified path dispatches different prompt structures based on model family. Qwen / Mistral / Gemma 1/2 use the V4 long system prompt (5 numbered rules + role description, ~690 chars) plus a question-only user message. Gemma 3 uses a short role-only system prompt (~70 chars) plus a user message that prepends the same 5 rules ahead of the question. Routing happens in `_get_prompts(model_id, ...)` in `src/simplified.py`, called from `analyse()` before any LLM call. Cache keys include the actual system prompt for the run, so prompts of different families don't collide in the cache.
+
+**Reason:** Empirical evidence from the cross-family Gemma 3-4B test pass (`docs/test-passes/v4-gemma-3-4b-colab.md`) showed that the V4 long system prompt — designed for and validated on Qwen — produced measurably worse multi-step instruction-following on Gemma 3-4B than the same content packaged as Google's recommended Gemma 3 structure. Specifically: with V4 long-system, Gemma 3-4B produced single-obligation Q1 outputs and vague Q3 sub-clause framing; with Gemma-adapted (short system + rules in user), the same model produced multi-section Q1 engagement and explicit sub-clause enumeration on Q3. The improvement is empirically documented in two paired runs.
+
+This is not a theoretical concern. Google's official Gemma 3 launch documentation (https://huggingface.co/blog/gemma3) explicitly states *"Gemma 3 uses very short system prompts followed by user prompts"*; the example shown is a single sentence. Our V4 system prompt is 10× that length. Different model families have different instruction-tuning preferences; a cross-family deployment that uses one prompt format universally pays a quality cost on whichever family didn't shape that format.
+
+**Considered alternative — single universal prompt that works for all families.** We didn't find one in the literature, and our empirical evidence shows that the same content in different package shapes produces different outputs. A universal prompt would require either (a) accepting a quality floor below what each family can reach with its preferred format, or (b) finding a format that is *equally* compliance-tuning-tolerant across all families — a meta-prompting research problem we did not have scope for.
+
+**Considered alternative — train per-family prompts via systematic A/B testing.** The right answer at production scale, but out of scope for a master's project on a frozen corpus. The current dispatch (one Qwen format + one Gemma 3 format, both empirically validated against the 5-query test set) is the minimum acceptable; full per-family tuning is a documented FLEX-path.
+
+**Considered alternative — add separate prompt formats for Llama 3, Mistral, Phi, etc.** Each family has its own preferences; we could add a dispatch entry per family. We didn't, because (a) the project tested two families empirically — adding untested branches would be speculation; (b) each new format adds a maintenance surface; (c) the dispatch pattern is now in place, so a third family entry is a 30-line addition when needed. Defer until a third family is empirically tested.
+
+**Side effect — cache invalidation across prompt versions.** If we change either `SYSTEM_PROMPT` (Qwen path) or `GEMMA3_SYSTEM_PROMPT` / `_user_message_gemma3` (Gemma 3 path), every cached entry produced under the old prompt is no longer reachable (different cache key). This is intentional: the cache is keyed on `(rendered_prompt, model_id)`, and a different prompt is a different rendered_prompt. Manual cleanup of `llm_cache_simplified/` is not required; old entries become harmless dead weight on disk.
+
+**Side effect — empirical limit of prompt-format adaptation.** The Gemma-adapted prompt did not close every quality gap. Q5 substance failure (Gemma 4B accepting Novara's "Standard AI Feature" self-classification despite Annex III §4 mandating high-risk) persists in both Gemma prompt formats while Qwen 3B handles it cleanly with the V4 prompt. **Per-family prompt design has limits. Some failure modes are model-capability bound, not prompt-design bound, and prompt engineering cannot substitute for that.** Documented as the second of three orthogonal mitigation levers in `evaluation-findings.md` Stage 8 (extended).
+
+**Updates `build-notes.md`?** No (build-notes describes architecture; prompt design is implementation-level detail).
+
+**For Daria's report appendix and viva:**
+- Report appendix: include both prompt formats with a brief explanation that family-specific instruction-tuning preferences led to a per-family dispatch pattern. Cite the Gemma 3 launch documentation for the recommendation.
+- Likely viva probe: *"why do you have two prompts? Doesn't that mean you didn't pick a winning format?"* — the answer: different model families have different instruction-tuning preferences; the same content in the same conceptual structure produces different outputs depending on whether rules are in the system or user turn, and on whether the system prompt is short or long. We tested two families and built a dispatch pattern that respects both. A production system supporting more families would extend the same pattern. ~45-second answer.
+- Likely viva probe: *"how does this scale to deployment?"* — the answer: per-family prompt design is the documented deployment cost, and we built the infrastructure for it (`_get_prompts(model_id, ...)`). Production teams adding a new model family would test 5 representative queries against the existing prompt dispatch, observe per-family quality, and either reuse one of the existing formats or add a new one. The cost is small per family (~30 LOC) but real and recurring. ~30-second answer.
+
+### Cross-encoder reranking as default; RRF tested and rejected — 2026-05-07
+**Decided:** Project default ranking strategy is `rerank_only` — BGE-large bi-encoder retrieves top-10 initial candidates per corpus side; `BAAI/bge-reranker-base` cross-encoder rescores all 10; the top-5 by rerank score go to the LLM. Reciprocal Rank Fusion (`rrf`) and single-stage retrieval (`bge_only`) remain available via `config.toml` `[ranking] strategy` or `RANKING_STRATEGY` env var. Both alternative strategies' code is preserved (see `_rrf_combine()` in `src/simplified.py`) for empirical replication.
+
+**Reason:** Stage 9 ablation (`docs/test-passes/v4-qwen-3b-ranking-strategies-comparison.md`) ran all three strategies on Qwen 3B + V4 prompt across the 5-query test set. Empirical evidence:
+1. **`rerank_only` is the only strategy that fixes Q4 wrong-audience anchoring** (the most stubborn cross-model retrieval failure documented in Stage 8 — persisted across Qwen 1.5B / 3B / 7B and Gemma 4B with two prompt formats). Cross-encoder promoted Article 50 para-1 (transparency-to-natural-persons — correct for "transparency for candidates") over BGE's top choice Article 50 para-4 (deep-fakes — wrong topic). The LLM picked it up and produced the correct-audience output.
+2. **`rrf` re-introduces failures that `rerank_only` had fixed.** RRF preserves BGE-relevant chunks via rank fusion; theoretically attractive ("best of both worlds"), empirically worse on this corpus because BGE is *confidently wrong* on Q4 (deep-fakes) and Q2 (instructions for use). RRF averages confident-wrong with confident-right, diluting the cross-encoder's targeted demotions. RRF Q4 reverted to BGE's wrong choice; RRF Q3 also surfaced FRIA-adjacent DPIA chunks prominently and triggered a FRIA leak at 3B that pure rerank-only didn't have.
+3. **`bge_only` (no reranker) leaves Q4 wrong-anchored** and otherwise matches rerank-only on Q1 / Q2 / Q5. The gain from reranking is concentrated in Q4 specifically.
+
+**Considered alternative — `rrf` (Reciprocal Rank Fusion).** Rejected on the empirical grounds above. RRF works well when both rankers have *partially-correct* signals; on this corpus + retriever combination, BGE is confidently wrong often enough that simple selection (rerank-only) beats fusion. RRF would still be the right default on a corpus where BGE produces partially-correct rankings and the cross-encoder produces partially-correct corrections — code stays for that future case.
+
+**Considered alternative — `bge_only`.** Rejected because it leaves Q4 wrong-anchored. The whole point of adding the reranker was to address documented retrieval failures from Stage 8; reverting to BGE-only abandons the gain.
+
+**Considered alternative — confidence-gated fallback** (use cross-encoder ranking when its max score >= τ; fall back to BGE otherwise). Not implemented. Theoretically the cleanest approach: the reranker's confidence varies dramatically by query (Q5 REG 0.85, Q3 REG 1.00 high; Q1 REG 0.03, Q4 REG 0.01 low — see Stage 9 evidence). A confidence-gated strategy would use rerank when reliable and BGE when not. Defendably *better* than any single strategy, but requires a τ threshold we'd have to defend (same intellectual debt as the chain's empirically-broken silence threshold). Documented as a future-work option; the friendly grounding labels (which expose reranker confidence to readers without committing to a hard threshold) are the lighter-touch version of this idea we did adopt.
+
+**Side effect — friendly grounding labels** (`strong` / `moderate` / `weak` per side, plus pattern interpretation) **stay regardless of ranking strategy.** They're computed in `_format_evidence()` from reranker scores, which are present in both `rerank_only` and `rrf` modes. In `bge_only` mode the evidence footer shows BGE scores without the reranker-confidence labels (since no reranker ran). Empirically validated: 4 of 5 queries had labels matching substantive truth. The single mismatch (Q2: confident retrieval but wrong-anchored output) reflects a real distinction worth surfacing in the report — labels measure retrieval confidence, not output correctness.
+
+**Updates `build-notes.md`?** No (build-notes describes architecture; ranking strategy is implementation-level config).
+
+**For Daria's report appendix and viva:**
+- Report appendix: brief description of the three ranking strategies tested, the per-query empirical evidence, and the rationale for choosing `rerank_only`. Reference Stage 9 for full per-query outputs.
+- Likely viva probe: *"why didn't you use Reciprocal Rank Fusion? It's the standard pattern."* — the answer: *"We did test it. Empirically on our corpus and test set, RRF was worse than pure cross-encoder reranking on two of five queries — it diluted the cross-encoder's targeted demotions on Q4, where BGE was confidently wrong, and re-introduced a FRIA leak on Q3 by promoting DPIA-adjacent chunks. RRF works well when both rankers have partially-correct signals; on this corpus BGE has confidently-wrong choices that the cross-encoder needs to fully demote. Documented as a tested-and-rejected option in `decisions.md`."* ~45-second answer with concrete empirical grounding.
+- Likely viva probe: *"how do you know your ranking strategy generalises?"* — *"We don't, in general. Five queries on one corpus is a constrained empirical scope. The result is specific to this setup — a different corpus or a different retriever may favour a different strategy. The code retains both `rrf` and `bge_only` paths via `config.toml`, so a production team could re-evaluate per-corpus."* ~30-second answer.
