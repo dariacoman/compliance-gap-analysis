@@ -8,7 +8,7 @@ torch==2.5.1
 sentence-transformers==3.3.1
 
 # Local LLM stack (simplified path — Qwen / Gemma via HF transformers)
-transformers==4.46.3
+transformers==4.57.6
 accelerate==1.1.1
 diskcache==5.6.3
 
